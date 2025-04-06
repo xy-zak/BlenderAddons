@@ -1,10 +1,10 @@
 bl_info = {
     "name": "OSC Controller",
     "author": "Zak Silver-Lennard ",
-    "version": (1, 0, 6),
+    "version": (1, 1, 0),
     "blender": (2, 80, 0),
     "location": "View3D > Sidebar > OSC",
-    "description": "Control object properties using OSC messages over LAN (python-osc included)",
+    "description": "Control object properties using OSC messages over LAN with keyframe recording (python-osc included)",
     "category": "Object",
 }
 
@@ -28,7 +28,7 @@ mapped_values_dict = {}  # Dictionary to store the mapped values by address
 pythonosc_available = False
 pythonosc_path = "Not installed"
 is_recording = False  # Flag to track recording state
-recording_timer = None  # Timer for keyframe recording
+keyframe_timer = None  # Timer for keyframing
 
 # Try importing pythonosc, handle gracefully if not available
 def check_pythonosc():
@@ -145,43 +145,48 @@ class OSCMapping(PropertyGroup):
         default=False
     )
 
-# Data structure to store recording mappings
-class OSCRecordingTarget(PropertyGroup):
+# Data structure for objects to record keyframes for
+class OSCRecordObject(PropertyGroup):
     target_object: PointerProperty(
         name="Target Object",
         type=bpy.types.Object,
-        description="Object to be keyframed during recording"
-    )
-    
-    # Which properties to keyframe
-    keyframe_location: BoolProperty(
-        name="Location",
-        description="Keyframe location during recording",
-        default=True
-    )
-    
-    keyframe_rotation: BoolProperty(
-        name="Rotation",
-        description="Keyframe rotation during recording",
-        default=True
-    )
-    
-    keyframe_scale: BoolProperty(
-        name="Scale",
-        description="Keyframe scale during recording",
-        default=True
-    )
-    
-    keyframe_custom_props: BoolProperty(
-        name="Custom Properties",
-        description="Keyframe custom properties during recording",
-        default=False
+        description="Object to record keyframes for"
     )
     
     is_active: BoolProperty(
         name="Active",
-        description="Enable/disable this recording target",
+        description="Enable/disable recording for this object",
         default=True
+    )
+    
+    record_location: BoolProperty(
+        name="Location",
+        description="Record keyframes for location",
+        default=True
+    )
+    
+    record_rotation: BoolProperty(
+        name="Rotation",
+        description="Record keyframes for rotation",
+        default=True
+    )
+    
+    record_scale: BoolProperty(
+        name="Scale",
+        description="Record keyframes for scale",
+        default=True
+    )
+    
+    record_custom_properties: BoolProperty(
+        name="Custom Properties",
+        description="Record keyframes for custom properties",
+        default=False
+    )
+    
+    custom_properties: StringProperty(
+        name="Custom Properties",
+        description="Comma-separated list of custom properties to record",
+        default=""
     )
 
 # Function to remap a value from one range to another
@@ -241,86 +246,67 @@ def render_complete_handler(scene):
 def render_cancel_handler(scene):
     bpy.app.timers.register(restart_osc_server_after_render, first_interval=0.5)
 
-# Function to insert keyframes for a specific object
-def keyframe_object(obj, keyframe_loc, keyframe_rot, keyframe_scale, keyframe_custom):
-    if not obj:
-        return
-    
-    try:
-        # Keyframe location
-        if keyframe_loc:
-            obj.keyframe_insert(data_path="location")
+# Function to insert keyframes for recorded objects
+def insert_keyframes():
+    for obj in bpy.context.scene.osc_record_objects:
+        if not obj.target_object or not obj.is_active:
+            continue
+            
+        target = obj.target_object
+        frame = bpy.context.scene.frame_current
         
-        # Keyframe rotation
-        if keyframe_rot:
-            obj.keyframe_insert(data_path="rotation_euler")
+        # Keyframe properties based on settings
+        if obj.record_location:
+            target.keyframe_insert(data_path="location", frame=frame)
         
-        # Keyframe scale
-        if keyframe_scale:
-            obj.keyframe_insert(data_path="scale")
+        if obj.record_rotation:
+            target.keyframe_insert(data_path="rotation_euler", frame=frame)
         
-        # Keyframe custom properties
-        if keyframe_custom:
-            for prop_name in obj.keys():
-                if prop_name != "_RNA_UI" and prop_name != "cycles":  # Skip internal properties
-                    obj.keyframe_insert(data_path=f'["{prop_name}"]')
-    
-    except Exception as e:
-        print(f"OSC Controller: Error inserting keyframes: {str(e)}")
+        if obj.record_scale:
+            target.keyframe_insert(data_path="scale", frame=frame)
+        
+        # Insert custom property keyframes if applicable
+        if obj.record_custom_properties and obj.custom_properties:
+            custom_props = [prop.strip() for prop in obj.custom_properties.split(',')]
+            for prop_name in custom_props:
+                if prop_name in target:
+                    target.keyframe_insert(data_path=f'["{prop_name}"]', frame=frame)
 
-# Function to record keyframes
-def record_keyframes():
-    if not is_recording:
-        return None
-    
-    try:
-        # Check if the collection property exists before trying to iterate
-        if hasattr(bpy.context.scene, "osc_recording_targets"):
-            # Process each recording target
-            for target in bpy.context.scene.osc_recording_targets:
-                if target.is_active and target.target_object:
-                    keyframe_object(
-                        target.target_object,
-                        target.keyframe_location,
-                        target.keyframe_rotation,
-                        target.keyframe_scale,
-                        target.keyframe_custom_props
-                    )
-        
-        # Continue the timer
-        return 1/24  # Run at approximately 24 fps
-    except Exception as e:
-        print(f"OSC Controller: Error in recording timer: {str(e)}")
-        return None
+# Function that's called each frame during recording
+def keyframe_recording_callback():
+    if is_recording:
+        insert_keyframes()
+        return 0.0  # Run again on the next frame
+    return None  # Stop the timer
 
 # Function to start recording frames
 def start_recording():
-    global is_recording, recording_timer
+    global is_recording, keyframe_timer
     is_recording = True
     
     # Start playing the timeline
     if not bpy.context.screen.is_animation_playing:
         bpy.ops.screen.animation_play()
     
-    # Start the recording timer
-    if recording_timer is None:
-        recording_timer = bpy.app.timers.register(record_keyframes)
+    # Set up a timer to insert keyframes every frame
+    if keyframe_timer is None:
+        keyframe_timer = bpy.app.timers.register(keyframe_recording_callback, persistent=True)
     
     print("OSC Controller: Started recording frames")
 
 # Function to stop recording frames
 def stop_recording():
-    global is_recording, recording_timer
+    global is_recording, keyframe_timer
     is_recording = False
     
     # Stop playing the timeline
     if bpy.context.screen.is_animation_playing:
         bpy.ops.screen.animation_play()
     
-    # Stop the recording timer
-    if recording_timer is not None and recording_timer in bpy.app.timers.get_timers():
-        bpy.app.timers.unregister(recording_timer)
-        recording_timer = None
+    # The keyframe timer will auto-stop when is_recording is False
+    if keyframe_timer and keyframe_timer in bpy.app.timers.get_list():
+        bpy.app.timers.unregister(keyframe_timer)
+    keyframe_timer = None
     
     print("OSC Controller: Stopped recording frames")
 
@@ -551,27 +537,20 @@ class OSC_OT_AddMapping(Operator):
             self.report({'ERROR'}, f"Failed to add mapping: {str(e)}")
             return {'CANCELLED'}
 
-# Operator to add a new recording target
-class OSC_OT_AddRecordingTarget(Operator):
-    bl_idname = "osc.add_recording_target"
-    bl_label = "Add Recording Target"
-    bl_description = "Add a new object to be keyframed during recording"
+# Operator to add a new Record Object
+class OSC_OT_AddRecordObject(Operator):
+    bl_idname = "osc.add_record_object"
+    bl_label = "Add Object to Record"
+    bl_description = "Add an object to record keyframes for"
     
     def execute(self, context):
         try:
-            # Ensure the collection property exists before adding to it
-            if not hasattr(context.scene, "osc_recording_targets"):
-                # If the property doesn't exist, try to create it
-                if not hasattr(bpy.types.Scene, "osc_recording_targets"):
-                    bpy.types.Scene.osc_recording_targets = bpy.props.CollectionProperty(type=OSCRecordingTarget)
-            
-            # Now add the new target
-            target = context.scene.osc_recording_targets.add()
+            record_obj = context.scene.osc_record_objects.add()
             if context.active_object:
-                target.target_object = context.active_object
+                record_obj.target_object = context.active_object
             return {'FINISHED'}
         except Exception as e:
-            self.report({'ERROR'}, f"Failed to add recording target: {str(e)}")
+            self.report({'ERROR'}, f"Failed to add record object: {str(e)}")
             return {'CANCELLED'}
 
 # Operator to remove an OSC mapping
@@ -590,22 +569,20 @@ class OSC_OT_RemoveMapping(Operator):
             self.report({'ERROR'}, f"Failed to remove mapping: {str(e)}")
             return {'CANCELLED'}
 
-# Operator to remove a recording target
-class OSC_OT_RemoveRecordingTarget(Operator):
-    bl_idname = "osc.remove_recording_target"
-    bl_label = "Remove Recording Target"
-    bl_description = "Remove the selected recording target"
+# Operator to remove a Record Object
+class OSC_OT_RemoveRecordObject(Operator):
+    bl_idname = "osc.remove_record_object"
+    bl_label = "Remove Record Object"
+    bl_description = "Remove the selected record object"
     
     index: IntProperty()
     
     def execute(self, context):
         try:
-            # Check if the property exists first
-            if hasattr(context.scene, "osc_recording_targets"):
-                context.scene.osc_recording_targets.remove(self.index)
+            context.scene.osc_record_objects.remove(self.index)
             return {'FINISHED'}
         except Exception as e:
-            self.report({'ERROR'}, f"Failed to remove recording target: {str(e)}")
+            self.report({'ERROR'}, f"Failed to remove record object: {str(e)}")
             return {'CANCELLED'}
 
 # Operator to copy driver expression to clipboard
@@ -972,9 +949,9 @@ class OSC_PT_InfoPanel(Panel):
         box.label(text="/renderimage (1) - Start a render")
         box.label(text="/recordframes (1) - Toggle frame recording")
 
-# Recording Targets UI Panel
+# Recording Panel
 class OSC_PT_RecordingPanel(Panel):
-    bl_label = "OSC Recording Targets"
+    bl_label = "OSC Recording"
     bl_idname = "OSC_PT_RecordingPanel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -988,59 +965,58 @@ class OSC_PT_RecordingPanel(Panel):
         box = layout.box()
         row = box.row()
         if is_recording:
-            row.label(text="Recording Status: Active", icon='REC')
+            row.label(text="Recording Active", icon='REC')
         else:
-            row.label(text="Recording Status: Inactive", icon='SNAP_FACE')
+            row.label(text="Recording Inactive", icon='SNAP_FACE')
         
-        # OSC command info
-        row = box.row()
-        row.label(text="Send '/recordframes 1' to toggle recording")
+        # Recording instructions
+        box.label(text="Send /recordframes 1 to toggle recording")
         
-        # Add recording target button
+        # Add record object button
         row = layout.row()
         row.scale_y = 1.5
-        row.operator("osc.add_recording_target", icon='ADD')
+        row.operator("osc.add_record_object", icon='ADD')
         
-        # List recording targets - check if property exists first
-        if hasattr(context.scene, "osc_recording_targets"):
-            if len(context.scene.osc_recording_targets) == 0:
-                box = layout.box()
-                box.label(text="No recording targets defined", icon='INFO')
-            else:
-                for idx, target in enumerate(context.scene.osc_recording_targets):
-                    box = layout.box()
-                    row = box.row()
-                    row.prop(target, "is_active", text="")
-                    
-                    if target.is_active:
-                        row.label(text=f"Target {idx+1}")
-                    else:
-                        row.label(text=f"Target {idx+1} (Disabled)")
-                    
-                    row.operator("osc.remove_recording_target", text="", icon='X').index = idx
-                    
-                    box.prop(target, "target_object")
-                    
-                    # Properties to keyframe
-                    row = box.row()
-                    row.label(text="Properties to Keyframe:")
-                    
-                    row = box.row(align=True)
-                    row.prop(target, "keyframe_location", toggle=True)
-                    row.prop(target, "keyframe_rotation", toggle=True)
-                    row.prop(target, "keyframe_scale", toggle=True)
-                    
-                    row = box.row()
-                    row.prop(target, "keyframe_custom_props")
-        else:
+        # List record objects
+        if len(context.scene.osc_record_objects) == 0:
             box = layout.box()
-            box.label(text="Recording targets not yet initialized", icon='ERROR')
-            box.label(text="Try restarting Blender or reinstalling the addon")
+            box.label(text="No objects set for recording", icon='INFO')
+            box.label(text="Add objects to record keyframes for")
+        else:
+            for idx, rec_obj in enumerate(context.scene.osc_record_objects):
+                box = layout.box()
+                row = box.row()
+                row.prop(rec_obj, "is_active", text="")
+                
+                if rec_obj.is_active:
+                    row.label(text=f"Object {idx+1}")
+                else:
+                    row.label(text=f"Object {idx+1} (Disabled)")
+                
+                row.operator("osc.remove_record_object", text="", icon='X').index = idx
+                
+                box.prop(rec_obj, "target_object")
+                
+                # Properties to record
+                row = box.row()
+                row.label(text="Record:")
+                row = box.row()
+                row.prop(rec_obj, "record_location", toggle=True)
+                row.prop(rec_obj, "record_rotation", toggle=True)
+                row.prop(rec_obj, "record_scale", toggle=True)
+                
+                # Custom properties
+                row = box.row()
+                row.prop(rec_obj, "record_custom_properties", text="Custom Properties")
+                
+                if rec_obj.record_custom_properties:
+                    box.prop(rec_obj, "custom_properties")
+                    box.label(text="Enter comma-separated property names")
 
-# Register classes first, then properties
+# Register
 classes = (
     OSCMapping,
-    OSCRecordingTarget,  # Add before using in properties
+    OSCRecordObject,
     OSCSettings,
     OSCDebugSettings,
     OSC_OT_InstallDependencies,
@@ -1048,8 +1024,8 @@ classes = (
     OSC_OT_StopServer,
     OSC_OT_AddMapping,
     OSC_OT_RemoveMapping,
-    OSC_OT_AddRecordingTarget,
-    OSC_OT_RemoveRecordingTarget,
+    OSC_OT_AddRecordObject,
+    OSC_OT_RemoveRecordObject,
     OSC_OT_CopyDriverExpression,
     OSC_OT_OpenDocumentation,
     OSC_PT_MainPanel,
@@ -1058,3 +1034,72 @@ classes = (
     OSC_PT_DebugPanel,
     OSC_PT_InfoPanel,
 )
+
+def register():
+    # Check for pythonosc library
+    check_pythonosc()
+    
+    for cls in classes:
+        bpy.utils.register_class(cls)
+    
+    bpy.types.Scene.osc_mappings = bpy.props.CollectionProperty(type=OSCMapping)
+    bpy.types.Scene.osc_record_objects = bpy.props.CollectionProperty(type=OSCRecordObject)
+    bpy.types.Scene.osc_settings = bpy.props.PointerProperty(type=OSCSettings)
+    bpy.types.Scene.osc_debug = bpy.props.PointerProperty(type=OSCDebugSettings)
+    
+    # Register driver functions
+    register_driver_functions()
+    
+    # Make sure the render handlers are removed before adding them
+    # to avoid duplicates if the addon is reloaded
+    if render_complete_handler in bpy.app.handlers.render_complete:
+        bpy.app.handlers.render_complete.remove(render_complete_handler)
+    bpy.app.handlers.render_complete.append(render_complete_handler)
+    
+    if render_cancel_handler in bpy.app.handlers.render_cancel:
+        bpy.app.handlers.render_cancel.remove(render_cancel_handler)
+    bpy.app.handlers.render_cancel.append(render_cancel_handler)
+
+
+def unregister():
+    # Stop OSC server if running
+    global osc_server_instance, is_server_running
+    if is_server_running and osc_server_instance:
+        osc_server_instance.shutdown()
+        osc_server_instance = None
+        is_server_running = False
+    
+    # Remove driver functions from namespace
+    if "get_osc_value" in bpy.app.driver_namespace:
+        del bpy.app.driver_namespace["get_osc_value"]
+    if "get_mapped_osc_value" in bpy.app.driver_namespace:
+        del bpy.app.driver_namespace["get_mapped_osc_value"]
+    if "remap_osc_value" in bpy.app.driver_namespace:
+        del bpy.app.driver_namespace["remap_osc_value"]
+    
+    # Remove render handlers
+    if render_complete_handler in bpy.app.handlers.render_complete:
+        bpy.app.handlers.render_complete.remove(render_complete_handler)
+    if render_cancel_handler in bpy.app.handlers.render_cancel:
+        bpy.app.handlers.render_cancel.remove(render_cancel_handler)
+    
+    # Stop recording if active
+    global is_recording, keyframe_timer
+    if is_recording:
+        stop_recording()
+    
+    # Remove the keyframe timer if it exists
+    if keyframe_timer and keyframe_timer in bpy.app.timers.get_list():
+        bpy.app.timers.unregister(keyframe_timer)
+    
+    for cls in reversed(classes):
+        bpy.utils.unregister_class(cls)
+    
+    del bpy.types.Scene.osc_mappings
+    del bpy.types.Scene.osc_record_objects
+    del bpy.types.Scene.osc_settings
+    del bpy.types.Scene.osc_debug
+
+
+if __name__ == "__main__":
+    register()
