@@ -1,8 +1,8 @@
 bl_info = {
     "name": "OSC Controller",
     "author": "Zak Silver-Lennard ",
-    "version": (1, 1, 0),
-    "blender": (2, 80, 0),
+    "version": (1, 1, 2),
+    "blender": (4, 3, 0),
     "location": "View3D > Sidebar > OSC",
     "description": "Control object properties using OSC messages over LAN with keyframe recording (python-osc included)",
     "category": "Object",
@@ -29,6 +29,8 @@ pythonosc_available = False
 pythonosc_path = "Not installed"
 is_recording = False  # Flag to track recording state
 keyframe_timer = None  # Timer for keyframing
+smoothing_buffers = {}  # For storing value history for buffer smoothing
+last_keyframed_values = {}  # For storing the last keyframed values for threshold smoothing
 
 # Try importing pythonosc, handle gracefully if not available
 def check_pythonosc():
@@ -189,6 +191,8 @@ class OSCRecordObject(PropertyGroup):
         default=""
     )
 
+
+
 # Function to remap a value from one range to another
 def remap_value(value, old_min, old_max, new_min, new_max):
     # Handle division by zero case
@@ -248,51 +252,396 @@ def render_cancel_handler(scene):
 
 # Function to insert keyframes for recorded objects
 def insert_keyframes():
-    for obj in bpy.context.scene.osc_record_objects:
-        if not obj.target_object or not obj.is_active:
+    """Insert keyframes for recorded objects"""
+    print("OSC Controller: Inserting keyframes...")
+    for obj_record in bpy.context.scene.osc_record_objects:
+        if not obj_record.target_object or not obj_record.is_active:
             continue
             
-        target = obj.target_object
+        target = obj_record.target_object
         frame = bpy.context.scene.frame_current
+        print(f"OSC Controller: Adding keyframes for {target.name} at frame {frame}")
         
-        # Keyframe properties based on settings
-        if obj.record_location:
+        # Keyframe location if enabled
+        if obj_record.record_location:
             target.keyframe_insert(data_path="location", frame=frame)
+            print(f"OSC Controller: Added location keyframes")
         
-        if obj.record_rotation:
+        # Keyframe rotation if enabled
+        if obj_record.record_rotation:
             target.keyframe_insert(data_path="rotation_euler", frame=frame)
+            print(f"OSC Controller: Added rotation keyframes")
         
-        if obj.record_scale:
+        # Keyframe scale if enabled
+        if obj_record.record_scale:
             target.keyframe_insert(data_path="scale", frame=frame)
+            print(f"OSC Controller: Added scale keyframes")
         
         # Insert custom property keyframes if applicable
-        if obj.record_custom_properties and obj.custom_properties:
-            custom_props = [prop.strip() for prop in obj.custom_properties.split(',')]
+        if obj_record.record_custom_properties and obj_record.custom_properties:
+            custom_props = [prop.strip() for prop in obj_record.custom_properties.split(',')]
             for prop_name in custom_props:
                 if prop_name in target:
                     target.keyframe_insert(data_path=f'["{prop_name}"]', frame=frame)
+                    print(f"OSC Controller: Added custom property keyframe for {prop_name}")
 
-# Function that's called each frame during recording
+class OSC_OT_SmoothKeyframes(Operator):
+    bl_idname = "osc.smooth_keyframes"
+    bl_label = "Smooth Keyframes"
+    bl_description = "Apply Gaussian smoothing to recorded keyframes"
+    
+    @classmethod
+    def poll(cls, context):
+        # Only show this operator if we have record objects
+        return len(context.scene.osc_record_objects) > 0
+    
+    def execute(self, context):
+        settings = context.scene.osc_settings
+        successful_objects = 0
+        
+        try:
+            for rec_obj in context.scene.osc_record_objects:
+                if not rec_obj.target_object or not rec_obj.is_active:
+                    continue
+                    
+                obj = rec_obj.target_object
+                fcurves_smoothed = 0
+                
+                # Get the object's animation data or create it if it doesn't exist
+                animation_data = obj.animation_data
+                if not animation_data or not animation_data.action:
+                    continue
+                    
+                # Get all FCurves for this object
+                action = animation_data.action
+                
+                # Process location FCurves
+                if rec_obj.record_location:
+                    for i in range(3):  # x, y, z
+                        fcurve = action.fcurves.find('location', index=i)
+                        if fcurve and len(fcurve.keyframe_points) > 2:  # Need at least 3 points to smooth
+                            # Apply custom smoothing
+                            if self.apply_smooth_modifier(fcurve, settings.post_smooth_factor):
+                                fcurves_smoothed += 1
+                
+                # Process rotation FCurves
+                if rec_obj.record_rotation:
+                    for i in range(3):  # x, y, z
+                        fcurve = action.fcurves.find('rotation_euler', index=i)
+                        if fcurve and len(fcurve.keyframe_points) > 2:
+                            if self.apply_smooth_modifier(fcurve, settings.post_smooth_factor):
+                                fcurves_smoothed += 1
+                
+                # Process scale FCurves
+                if rec_obj.record_scale:
+                    for i in range(3):  # x, y, z
+                        fcurve = action.fcurves.find('scale', index=i)
+                        if fcurve and len(fcurve.keyframe_points) > 2:
+                            if self.apply_smooth_modifier(fcurve, settings.post_smooth_factor):
+                                fcurves_smoothed += 1
+                
+                # Process custom properties
+                if rec_obj.record_custom_properties and rec_obj.custom_properties:
+                    custom_props = [prop.strip() for prop in rec_obj.custom_properties.split(',')]
+                    for prop_name in custom_props:
+                        data_path = f'["{prop_name}"]'
+                        fcurve = action.fcurves.find(data_path)
+                        if fcurve and len(fcurve.keyframe_points) > 2:
+                            if self.apply_smooth_modifier(fcurve, settings.post_smooth_factor):
+                                fcurves_smoothed += 1
+                
+                if fcurves_smoothed > 0:
+                    successful_objects += 1
+                    
+            if successful_objects > 0:
+                self.report({'INFO'}, f"Smoothed keyframes on {successful_objects} objects")
+                return {'FINISHED'}
+            else:
+                self.report({'WARNING'}, "No keyframes found to smooth (need at least 3 keyframes per curve)")
+                return {'CANCELLED'}
+                
+        except Exception as e:
+            self.report({'ERROR'}, f"Error while smoothing: {str(e)}")
+            return {'CANCELLED'}
+    
+    def apply_smooth_modifier(self, fcurve, smooth_factor):
+        """Apply smoothing to an FCurve manually since Blender doesn't have a GAUSSIAN_SMOOTH modifier"""
+        try:
+            # First create a backup of the original keyframe points
+            original_points = [(p.co.x, p.co.y) for p in fcurve.keyframe_points]
+            
+            if len(original_points) < 3:
+                # Not enough points to smooth
+                return False
+                
+            # Get the smooth width based on the factor
+            # Higher factor = more neighbors considered = smoother curve
+            kernel_size = max(3, int(3 + (smooth_factor * 2)))
+            if kernel_size % 2 == 0:  # Ensure odd kernel size
+                kernel_size += 1
+                
+            # Create a simple Gaussian-like smoothing kernel
+            # This is a triangular kernel which approximates a Gaussian
+            half = kernel_size // 2
+            kernel = []
+            for i in range(kernel_size):
+                weight = 1.0 - (abs(i - half) / (half + 0.5))
+                kernel.append(weight)
+                
+            # Normalize kernel
+            total = sum(kernel)
+            kernel = [k / total for k in kernel]
+            
+            # Apply the smoothing
+            # We'll work with a temporary list to avoid affecting values we haven't processed yet
+            new_values = []
+            
+            # For each point, calculate the weighted average of it and its neighbors
+            for i in range(len(original_points)):
+                weighted_sum = 0
+                weights_used = 0
+                
+                for j in range(-half, half + 1):
+                    if 0 <= (i + j) < len(original_points):
+                        weight = kernel[j + half]
+                        weighted_sum += original_points[i + j][1] * weight
+                        weights_used += weight
+                
+                # Normalize based on weights actually used (for edge cases)
+                if weights_used > 0:
+                    new_values.append(weighted_sum / weights_used)
+                else:
+                    new_values.append(original_points[i][1])
+                    
+            # Apply the new values
+            for i, kf in enumerate(fcurve.keyframe_points):
+                if i < len(new_values):
+                    kf.co.y = new_values[i]
+            
+            # Update the FCurve
+            fcurve.update()
+            return True
+            
+        except Exception as e:
+            print(f"OSC Controller: Error smoothing FCurve: {str(e)}")
+            return False
+        
+
+class OSC_OT_RemoveJitter(Operator):
+    bl_idname = "osc.remove_jitter"
+    bl_label = "Remove Jitter"
+    bl_description = "Remove rogue keyframes that appear to be jitter"
+    
+    @classmethod
+    def poll(cls, context):
+        # Only show this operator if we have record objects
+        return len(context.scene.osc_record_objects) > 0
+    
+    def execute(self, context):
+        settings = context.scene.osc_settings
+        threshold = settings.jitter_threshold
+        total_removed = 0
+        objects_affected = 0
+        
+        try:
+            for rec_obj in context.scene.osc_record_objects:
+                if not rec_obj.target_object or not rec_obj.is_active:
+                    continue
+                
+                obj = rec_obj.target_object
+                fcurves_processed = 0
+                keyframes_removed = 0
+                
+                # Get the object's animation data
+                animation_data = obj.animation_data
+                if not animation_data or not animation_data.action:
+                    continue
+                
+                action = animation_data.action
+                
+                # Process all selected property types
+                curves_to_process = []
+                
+                # Add location curves
+                if rec_obj.record_location:
+                    for i in range(3):
+                        fcurve = action.fcurves.find('location', index=i)
+                        if fcurve and len(fcurve.keyframe_points) > 4:
+                            curves_to_process.append(fcurve)
+                
+                # Add rotation curves
+                if rec_obj.record_rotation:
+                    for i in range(3):
+                        fcurve = action.fcurves.find('rotation_euler', index=i)
+                        if fcurve and len(fcurve.keyframe_points) > 4:
+                            curves_to_process.append(fcurve)
+                
+                # Add scale curves
+                if rec_obj.record_scale:
+                    for i in range(3):
+                        fcurve = action.fcurves.find('scale', index=i)
+                        if fcurve and len(fcurve.keyframe_points) > 4:
+                            curves_to_process.append(fcurve)
+                
+                # Add custom properties
+                if rec_obj.record_custom_properties and rec_obj.custom_properties:
+                    custom_props = [prop.strip() for prop in rec_obj.custom_properties.split(',')]
+                    for prop_name in custom_props:
+                        data_path = f'["{prop_name}"]'
+                        fcurve = action.fcurves.find(data_path)
+                        if fcurve and len(fcurve.keyframe_points) > 4:
+                            curves_to_process.append(fcurve)
+                
+                # Process each curve to remove jitter
+                for fcurve in curves_to_process:
+                    removed = self.remove_jitter_from_curve(fcurve, threshold)
+                    if removed > 0:
+                        keyframes_removed += removed
+                        fcurves_processed += 1
+                
+                if keyframes_removed > 0:
+                    objects_affected += 1
+                    total_removed += keyframes_removed
+            
+            if total_removed > 0:
+                self.report({'INFO'}, f"Removed {total_removed} jitter keyframes from {objects_affected} objects")
+                return {'FINISHED'}
+            else:
+                self.report({'INFO'}, "No jitter keyframes found to remove")
+                return {'FINISHED'}
+        
+        except Exception as e:
+            self.report({'ERROR'}, f"Error while removing jitter: {str(e)}")
+            return {'CANCELLED'}
+    
+    def remove_jitter_from_curve(self, fcurve, threshold):
+        """Identify and remove keyframes that appear to be jitter outliers"""
+        try:
+            # Need at least 5 keyframes for this to work effectively
+            if len(fcurve.keyframe_points) < 5:
+                return 0
+            
+            # Create a working copy of keyframe points and sort by frame
+            keyframes = [(kf.co.x, kf.co.y, i) for i, kf in enumerate(fcurve.keyframe_points)]
+            keyframes.sort(key=lambda k: k[0])  # Sort by x (frame)
+            
+            # Find outliers by comparing each point to its neighbors' trend
+            to_remove = []
+            
+            for i in range(2, len(keyframes) - 2):
+                # Get five consecutive points
+                p0 = keyframes[i-2][1]  # y value
+                p1 = keyframes[i-1][1]
+                p2 = keyframes[i][1]    # Current point
+                p3 = keyframes[i+1][1]
+                p4 = keyframes[i+2][1]
+                
+                # Calculate expected value based on neighbors
+                expected = (p0 + p1 + p3 + p4) / 4.0
+                
+                # Calculate difference from expected value
+                diff = abs(p2 - expected)
+                
+                # Calculate local range of values to normalize the difference
+                local_range = max(p0, p1, p2, p3, p4) - min(p0, p1, p2, p3, p4)
+                if local_range == 0:
+                    local_range = 0.0001  # Avoid division by zero
+                
+                # If normalized difference exceeds threshold, mark for removal
+                if (diff / local_range) > threshold:
+                    to_remove.append(keyframes[i][2])  # Original index
+            
+            # Remove the marked keyframes (in reverse order to avoid index shifting)
+            for idx in sorted(to_remove, reverse=True):
+                fcurve.keyframe_points.remove(fcurve.keyframe_points[idx])
+            
+            # Update the curve
+            if to_remove:
+                fcurve.update()
+            
+            return len(to_remove)
+        
+        except Exception as e:
+            print(f"OSC Controller: Error removing jitter: {str(e)}")
+            return 0
+
+
+    # Function that's called each frame during recording
 def keyframe_recording_callback():
+    print("OSC Controller: Keyframe callback running...")
     if is_recording:
-        insert_keyframes()
-        return 0.0  # Run again on the next frame
+        # Get the current time
+        current_time = datetime.datetime.now()
+        
+        # Get the desired frame rate
+        try:
+            fps = int(bpy.context.scene.osc_settings.keyframe_rate)
+        except:
+            fps = 30  # Default to 30 fps if there's an issue
+        
+        # Calculate time between frames in seconds
+        frame_time = 1.0 / fps
+        
+        # Check if we've reached the end of the frame range
+        if bpy.context.scene.osc_settings.auto_stop_at_end:
+            current_frame = bpy.context.scene.frame_current
+            end_frame = bpy.context.scene.frame_end
+            
+            if current_frame >= end_frame:
+                # Stop recording
+                print("OSC Controller: Reached end frame, stopping recording")
+                bpy.app.timers.register(stop_recording)
+                return None
+        
+        # Only insert keyframes at the desired rate
+        if not hasattr(keyframe_recording_callback, "last_keyframe_time"):
+            print("OSC Controller: First keyframe of recording")
+            keyframe_recording_callback.last_keyframe_time = current_time
+            insert_keyframes()
+        else:
+            elapsed = (current_time - keyframe_recording_callback.last_keyframe_time).total_seconds()
+            if elapsed >= frame_time:
+                print(f"OSC Controller: Adding keyframe after {elapsed:.3f}s (target: {frame_time:.3f}s)")
+                insert_keyframes()
+                keyframe_recording_callback.last_keyframe_time = current_time
+        
+        return 0.01  # Check again in 10ms (more responsive than waiting a full frame)
+    
+    # Clean up when recording stops
+    if hasattr(keyframe_recording_callback, "last_keyframe_time"):
+        del keyframe_recording_callback.last_keyframe_time
+    
+    print("OSC Controller: Keyframe callback stopping")
     return None  # Stop the timer
 
 # Function to start recording frames
 def start_recording():
     global is_recording, keyframe_timer
-    is_recording = True
     
-    # Start playing the timeline
+    # Make sure we're not already recording
+    if is_recording:
+        print("OSC Controller: Already recording, ignoring start request")
+        return
+        
+    is_recording = True
+    print("OSC Controller: Starting recording frames")
+    
+    # Start playing the timeline if it's not already playing
     if not bpy.context.screen.is_animation_playing:
         bpy.ops.screen.animation_play()
+        print("OSC Controller: Started animation playback")
     
-    # Set up a timer to insert keyframes every frame
-    if keyframe_timer is None:
-        keyframe_timer = bpy.app.timers.register(keyframe_recording_callback, persistent=True)
+    # Set up a timer to insert keyframes at the specified rate
+    if keyframe_timer is not None and keyframe_timer in bpy.app.timers.get_list():
+        try:
+            bpy.app.timers.unregister(keyframe_timer)
+            print("OSC Controller: Removed existing timer")
+        except:
+            pass
     
-    print("OSC Controller: Started recording frames")
+    # Create a new timer
+    keyframe_timer = bpy.app.timers.register(keyframe_recording_callback, persistent=True)
+    print(f"OSC Controller: Registered new keyframe timer: {keyframe_timer}")
 
 # Function to stop recording frames
 def stop_recording():
@@ -307,6 +656,14 @@ def stop_recording():
     if keyframe_timer and keyframe_timer in bpy.app.timers.get_list():
         bpy.app.timers.unregister(keyframe_timer)
     keyframe_timer = None
+    
+    # Apply jitter removal if enabled
+    if bpy.context.scene.osc_settings.remove_jitter:
+        bpy.ops.osc.remove_jitter()
+    
+    # Apply post-smoothing if enabled
+    if bpy.context.scene.osc_settings.post_smooth_keyframes:
+        bpy.ops.osc.smooth_keyframes()
     
     print("OSC Controller: Stopped recording frames")
 
@@ -348,12 +705,15 @@ def osc_handler(address, *args):
             bpy.app.timers.register(start_render_image)
             return
         
+        # In the osc_handler function, ensure the recording section is working
         # Handle record frames command
         if address == "/recordframes" and value == 1.0:
             global is_recording
             if not is_recording:
+                print("OSC Controller: Received record command - starting recording")
                 bpy.app.timers.register(start_recording)
             else:
+                print("OSC Controller: Received record command - stopping recording")
                 bpy.app.timers.register(stop_recording)
             return
         
@@ -412,6 +772,106 @@ def register_driver_functions():
     bpy.app.driver_namespace["get_osc_value"] = get_osc_value
     bpy.app.driver_namespace["get_mapped_osc_value"] = get_mapped_osc_value
     bpy.app.driver_namespace["remap_osc_value"] = remap_osc_value
+
+def initialize_smoothing_buffers(obj, prop_path, initial_value):
+    """Initialize or reset a smoothing buffer for a property with an initial value"""
+    buffer_key = f"{obj.name}_{prop_path}"
+    buffer_size = bpy.context.scene.osc_settings.smoothing_buffer_size
+    smoothing_buffers[buffer_key] = [initial_value] * buffer_size
+    last_keyframed_values[buffer_key] = initial_value
+
+def get_current_property_value(obj, prop_path):
+    """Get the current value of a property using its path"""
+    if '.' in prop_path:
+        # Handle vector properties like location, rotation, scale
+        prop_base, index = prop_path.split('.')
+        index = int(index)
+        return getattr(obj, prop_base)[index]
+    elif '[' in prop_path:
+        # Handle custom properties
+        prop_name = prop_path.strip('[]"\'')
+        return obj[prop_name]
+    else:
+        # Handle simple properties
+        return getattr(obj, prop_path)
+
+def set_property_value(obj, prop_path, value):
+    """Set a property value using its path"""
+    if '.' in prop_path:
+        # Handle vector properties like location, rotation, scale
+        prop_base, index = prop_path.split('.')
+        index = int(index)
+        vector = getattr(obj, prop_base)
+        vector[index] = value
+    elif '[' in prop_path:
+        # Handle custom properties
+        prop_name = prop_path.strip('[]"\'')
+        obj[prop_name] = value
+    else:
+        # Handle simple properties
+        setattr(obj, prop_path, value)
+
+def get_smoothed_value(obj, prop_path, current_value):
+    """Apply smoothing to a value based on settings"""
+    settings = bpy.context.scene.osc_settings
+    
+    if not settings.enable_smoothing:
+        return current_value
+        
+    buffer_key = f"{obj.name}_{prop_path}"
+    
+    # Initialize buffer if it doesn't exist
+    if buffer_key not in smoothing_buffers:
+        initialize_smoothing_buffers(obj, prop_path, current_value)
+        return current_value
+    
+    # Get the last keyframed value
+    last_value = last_keyframed_values.get(buffer_key, current_value)
+    
+    # Apply threshold filter if enabled
+    if settings.smoothing_method in ('threshold', 'both'):
+        # If the change is smaller than the threshold, use the last value
+        if abs(current_value - last_value) < settings.smoothing_threshold:
+            return last_value
+    
+    # Apply buffer smoothing if enabled
+    if settings.smoothing_method in ('buffer', 'both'):
+        # Update the buffer with the new value
+        buffer = smoothing_buffers[buffer_key]
+        buffer.pop(0)
+        buffer.append(current_value)
+        
+        # Calculate the average of the buffer
+        return sum(buffer) / len(buffer)
+    
+    # If only threshold filtering is used, return the current value
+    return current_value
+
+def should_keyframe_property(obj, prop_path, current_value):
+    """Determine if a property should be keyframed based on smoothing settings"""
+    settings = bpy.context.scene.osc_settings
+    
+    if not settings.enable_smoothing:
+        return True
+        
+    buffer_key = f"{obj.name}_{prop_path}"
+    
+    # Initialize if it doesn't exist
+    if buffer_key not in last_keyframed_values:
+        last_keyframed_values[buffer_key] = current_value
+        return True
+    
+    # Get the last keyframed value
+    last_value = last_keyframed_values[buffer_key]
+    
+    # If threshold filtering is enabled, check if the change is significant
+    if settings.smoothing_method in ('threshold', 'both'):
+        if abs(current_value - last_value) < settings.smoothing_threshold:
+            return False
+    
+    # Update the last keyframed value
+    last_keyframed_values[buffer_key] = current_value
+    return True
 
 # Operator to install dependencies
 class OSC_OT_InstallDependencies(Operator):
@@ -647,6 +1107,136 @@ class OSCSettings(PropertyGroup):
         default=9001,
         min=1024,
         max=65535
+    )
+    
+    # Add frame rate options
+    record_frame_rates = [
+        ('12', "12 fps", "Record at 12 frames per second"),
+        ('15', "15 fps", "Record at 15 frames per second"),
+        ('24', "24 fps", "Record at 24 frames per second"),
+        ('30', "30 fps", "Record at 30 frames per second"),
+        ('48', "48 fps", "Record at 48 frames per second"),
+        ('60', "60 fps", "Record at 60 frames per second"),
+    ]
+    
+    keyframe_rate: EnumProperty(
+        name="Keyframe Rate",
+        description="Rate at which to record keyframes",
+        items=record_frame_rates,
+        default='30'
+    )
+    
+    # Post-processing smoothing options
+    post_smooth_keyframes: BoolProperty(
+        name="Apply Gaussian Smoothing",
+        description="Apply smoothing to keyframes after recording stops",
+        default=False
+    )
+    
+    post_smooth_factor: FloatProperty(
+        name="Smoothing Factor",
+        description="Strength of the post-recording smoothing (1.0 = standard)",
+        default=1.0,
+        min=0.1,
+        max=5.0,
+        precision=1
+    )
+    
+    remove_jitter: BoolProperty(
+        name="Remove Rogue Keyframes",
+        description="Remove keyframes that appear to be jitter outliers",
+        default=False
+    )
+    
+    jitter_threshold: FloatProperty(
+        name="Jitter Threshold",
+        description="How much a keyframe must deviate to be considered jitter (smaller = more aggressive)",
+        default=0.05,
+        min=0.001,
+        max=0.5,
+        precision=3
+    )
+    
+    # Auto-stop at end of frame range
+    auto_stop_at_end: BoolProperty(
+        name="Auto-Stop at End Frame",
+        description="Automatically stop recording when reaching the end of the frame range",
+        default=True
+    )
+    
+    # Auto-stop at end of frame range
+    auto_stop_at_end: BoolProperty(
+        name="Auto-Stop at End Frame",
+        description="Automatically stop recording when reaching the end of the frame range",
+        default=True
+    )
+
+
+class OSC_OT_ToggleRecording(Operator):
+    bl_idname = "osc.toggle_recording"
+    bl_label = "Toggle Recording"
+    bl_description = "Start or stop OSC recording"
+    
+    def execute(self, context):
+        global is_recording
+        
+        if is_recording:
+            # Stop recording
+            print("OSC Controller: Toggle operator stopping recording")
+            stop_recording()
+            self.report({'INFO'}, "Stopped recording")
+        else:
+            # Start recording
+            print("OSC Controller: Toggle operator starting recording")
+            start_recording()
+            self.report({'INFO'}, "Started recording")
+            
+        return {'FINISHED'}
+
+
+class OSC_OT_SetSceneFPS(Operator):
+    bl_idname = "osc.set_scene_fps"
+    bl_label = "Set Scene FPS Now"
+    bl_description = "Immediately set Blender's scene frame rate to match the selected keyframe rate"
+    
+    def execute(self, context):
+        try:
+            settings = context.scene.osc_settings
+            fps = int(settings.keyframe_rate)
+            
+            # Set the frame rate
+            context.scene.render.fps = fps
+            
+            # Also set the frame step to 1 to ensure smooth playback
+            context.scene.frame_step = 1
+            
+            self.report({'INFO'}, f"Scene frame rate set to {fps} fps")
+            return {'FINISHED'}
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to set scene frame rate: {str(e)}")
+            return {'CANCELLED'}
+    
+    # Add frame rate options
+    record_frame_rates = [
+        ('12', "12 fps", "Record at 12 frames per second"),
+        ('15', "15 fps", "Record at 15 frames per second"),
+        ('24', "24 fps", "Record at 24 frames per second"),
+        ('30', "30 fps", "Record at 30 frames per second"),
+        ('48', "48 fps", "Record at 48 frames per second"),
+        ('60', "60 fps", "Record at 60 frames per second"),
+    ]
+    
+    keyframe_rate: EnumProperty(
+        name="Keyframe Rate",
+        description="Rate at which to record keyframes",
+        items=record_frame_rates,
+        default='30'
+    )
+    
+    set_scene_fps: BoolProperty(
+        name="Set Scene FPS",
+        description="Also change Blender's scene frame rate to match",
+        default=False
     )
 
 # OSC Debug Settings
@@ -960,17 +1550,73 @@ class OSC_PT_RecordingPanel(Panel):
     
     def draw(self, context):
         layout = self.layout
+        settings = context.scene.osc_settings
         
-        # Recording status
+        # Recording status and manual control
         box = layout.box()
         row = box.row()
         if is_recording:
+            row.operator("osc.toggle_recording", text="Stop Recording", icon='SNAP_FACE')
             row.label(text="Recording Active", icon='REC')
         else:
+            row.operator("osc.toggle_recording", text="Start Recording", icon='REC')
             row.label(text="Recording Inactive", icon='SNAP_FACE')
         
+        # Frame rate options
+        box = layout.box()
+        box.label(text="Frame Rate Settings:")
+        
+        # Keyframe rate
+        row = box.row(align=True)
+        row.prop(settings, "keyframe_rate", text="Keyframe Rate")
+        row.operator("osc.set_scene_fps", text="Set Scene FPS", icon='TIME')
+        
+        # Current scene FPS
+        row = box.row()
+        row.label(text=f"Scene Frame Rate: {context.scene.render.fps} fps")
+        
+        # Auto-stop option
+        row = box.row()
+        row.prop(settings, "auto_stop_at_end")
+        row.label(text=f"End Frame: {context.scene.frame_end}")
+        
+        # Post-processing section
+        box = layout.box()
+        box.label(text="Post-Recording Processing:")
+        
+        # Anti-jitter option
+        row = box.row()
+        row.prop(settings, "remove_jitter")
+        
+        if settings.remove_jitter:
+            row = box.row()
+            row.prop(settings, "jitter_threshold")
+            row.label(text="Smaller = More Aggressive")
+        
+        # Smoothing option  
+        row = box.row()
+        row.prop(settings, "post_smooth_keyframes")
+        
+        if settings.post_smooth_keyframes:
+            row = box.row()
+            row.prop(settings, "post_smooth_factor")
+            row.label(text="Higher = Smoother")
+        
+        # Manual processing buttons
+        row = box.row(align=True)
+        row.operator("osc.remove_jitter", icon='KEYFRAME')
+        row.operator("osc.smooth_keyframes", icon='SMOOTHCURVE')
+        
+        # Explanation text
+        col = box.column()
+        col.label(text="Anti-jitter removes outlier keyframes that")
+        col.label(text="don't follow the overall motion trend.")
+        col.label(text="Smoothing reduces minor variations while")
+        col.label(text="preserving intentional movements.")
+        
         # Recording instructions
-        box.label(text="Send /recordframes 1 to toggle recording")
+        box = layout.box()
+        box.label(text="Send /recordframes 1 to toggle recording via OSC")
         
         # Add record object button
         row = layout.row()
@@ -1028,6 +1674,10 @@ classes = (
     OSC_OT_RemoveRecordObject,
     OSC_OT_CopyDriverExpression,
     OSC_OT_OpenDocumentation,
+    OSC_OT_SetSceneFPS,
+    OSC_OT_SmoothKeyframes,
+    OSC_OT_RemoveJitter,
+    OSC_OT_ToggleRecording,
     OSC_PT_MainPanel,
     OSC_PT_MappingsPanel,
     OSC_PT_RecordingPanel,
