@@ -1,4 +1,4 @@
-# Product Render Setup Add-on for Blender
+
 
 bl_info = {
     "name": "Product Render Setup",
@@ -17,7 +17,7 @@ import bpy
 import math
 import time
 from mathutils import Vector, Matrix
-from bpy.props import EnumProperty, FloatProperty, PointerProperty
+from bpy.props import EnumProperty, FloatProperty, PointerProperty, BoolProperty
 
 # Constants
 CAMERA_PRESETS = [
@@ -27,6 +27,9 @@ CAMERA_PRESETS = [
 ]
 
 FOCUS_PLANE_NAME = "FocusVisualizerPlane"
+KEY_LIGHT_NAME = "ProductKeyLight"
+FILL_LIGHT_NAME = "ProductFillLight"
+RIM_LIGHT_NAME = "ProductRimLight"
 
 # Property class
 class ProductRenderProperties(bpy.types.PropertyGroup):
@@ -36,11 +39,22 @@ class ProductRenderProperties(bpy.types.PropertyGroup):
         type=bpy.types.Object,
     )
     
+    # Flag to track manual changes
+    manual_camera_settings: BoolProperty(default=False)
+    manual_focal_length: FloatProperty(default=70.0)
+    manual_aperture: FloatProperty(default=2.4)
+    
+    # UI expand flags for collapsible sections
+    key_light_expand: BoolProperty(default=True)
+    fill_light_expand: BoolProperty(default=False)
+    rim_light_expand: BoolProperty(default=False)
+    
     camera_preset: EnumProperty(
         name="Camera Distance",
         description="Set camera distance and lens settings",
         items=CAMERA_PRESETS,
-        default="medium"
+        default="medium",
+        update=lambda self, context: update_camera_preset(self, context)
     )
     
     camera_offset: FloatProperty(
@@ -81,9 +95,132 @@ class ProductRenderProperties(bpy.types.PropertyGroup):
         min=-1.0,
         max=1.0,
         step=0.05,
-        update=lambda self, context: update_camera_live(self, context)
+        update=lambda self, context: update_focus_only(self, context)
     )
     
+    # KEY LIGHT Properties
+    key_light_strength: FloatProperty(
+        name="Key Light Strength",
+        description="Strength of the key light",
+        default=1200.0,
+        min=0.0,
+        max=5000.0,
+        step=10.0,
+        update=lambda self, context: update_key_light(self, context)
+    )
+    
+    key_light_temp: FloatProperty(
+        name="Key Light Temperature",
+        description="Color temperature of the key light (K)",
+        default=5500.0,
+        min=1000.0,
+        max=10000.0,
+        step=100.0,
+        update=lambda self, context: update_key_light(self, context)
+    )
+    
+    key_light_size: FloatProperty(
+        name="Key Light Size",
+        description="Size multiplier for the key light",
+        default=1.0,
+        min=0.1,
+        max=3.0,
+        step=0.1,
+        update=lambda self, context: update_key_light(self, context)
+    )
+    
+    key_light_offset: FloatProperty(
+        name="Key Light Distance",
+        description="Adjust distance of the key light from the object",
+        default=0.0,
+        min=-5.0,
+        max=5.0,
+        step=0.1,
+        update=lambda self, context: update_key_light(self, context)
+    )
+    
+    key_light_h_offset: FloatProperty(
+        name="Key Light Horizontal Angle",
+        description="Horizontal angle for the key light (degrees)",
+        default=45.0,
+        min=-180.0,
+        max=180.0,
+        step=5.0,
+        update=lambda self, context: update_key_light(self, context)
+    )
+    
+    key_light_v_offset: FloatProperty(
+        name="Key Light Vertical Offset",
+        description="Vertical offset for the key light (up/down)",
+        default=1.0,
+        min=-5.0,
+        max=5.0,
+        step=0.1,
+        update=lambda self, context: update_key_light(self, context)
+    )
+    
+    # FILL LIGHT Properties
+    fill_light_strength: FloatProperty(
+        name="Fill Light Strength",
+        description="Strength of the fill light",
+        default=600.0,
+        min=0.0,
+        max=5000.0,
+        step=10.0,
+        update=lambda self, context: update_fill_light(self, context)
+    )
+    
+    fill_light_temp: FloatProperty(
+        name="Fill Light Temperature",
+        description="Color temperature of the fill light (K)",
+        default=6000.0,
+        min=1000.0,
+        max=10000.0,
+        step=100.0,
+        update=lambda self, context: update_fill_light(self, context)
+    )
+    
+    fill_light_size: FloatProperty(
+        name="Fill Light Size",
+        description="Size multiplier for the fill light",
+        default=1.2,
+        min=0.1,
+        max=3.0,
+        step=0.1,
+        update=lambda self, context: update_fill_light(self, context)
+    )
+    
+    fill_light_offset: FloatProperty(
+        name="Fill Light Distance",
+        description="Adjust distance of the fill light from the object",
+        default=0.0,
+        min=-5.0,
+        max=5.0,
+        step=0.1,
+        update=lambda self, context: update_fill_light(self, context)
+    )
+    
+    fill_light_h_offset: FloatProperty(
+        name="Fill Light Horizontal Angle",
+        description="Horizontal angle for the fill light (degrees)",
+        default=-45.0,
+        min=-180.0,
+        max=180.0,
+        step=5.0,
+        update=lambda self, context: update_fill_light(self, context)
+    )
+    
+    fill_light_v_offset: FloatProperty(
+        name="Fill Light Vertical Offset",
+        description="Vertical offset for the fill light (up/down)",
+        default=0.0,
+        min=-5.0,
+        max=5.0,
+        step=0.1,
+        update=lambda self, context: update_fill_light(self, context)
+    )
+    
+    # RIM LIGHT Properties
     rim_light_strength: FloatProperty(
         name="Rim Light Strength",
         description="Strength of the rim light",
@@ -95,12 +232,22 @@ class ProductRenderProperties(bpy.types.PropertyGroup):
     )
     
     rim_light_temp: FloatProperty(
-        name="Light Temperature",
+        name="Rim Light Temperature",
         description="Color temperature of the rim light (K)",
         default=5500.0,
         min=1000.0,
         max=10000.0,
         step=100.0,
+        update=lambda self, context: update_rim_light(self, context)
+    )
+    
+    rim_light_size: FloatProperty(
+        name="Rim Light Size",
+        description="Size multiplier for the rim light",
+        default=0.8,
+        min=0.1,
+        max=3.0,
+        step=0.1,
         update=lambda self, context: update_rim_light(self, context)
     )
     
@@ -115,19 +262,19 @@ class ProductRenderProperties(bpy.types.PropertyGroup):
     )
     
     rim_light_h_offset: FloatProperty(
-        name="Rim Light Horizontal Offset",
-        description="Horizontal offset for the rim light (left/right)",
-        default=0.0,
-        min=-5.0,
-        max=5.0,
-        step=0.1,
+        name="Rim Light Horizontal Angle",
+        description="Horizontal angle for the rim light (degrees)",
+        default=180.0,
+        min=-180.0,
+        max=180.0,
+        step=5.0,
         update=lambda self, context: update_rim_light(self, context)
     )
     
     rim_light_v_offset: FloatProperty(
         name="Rim Light Vertical Offset",
         description="Vertical offset for the rim light (up/down)",
-        default=0.0,
+        default=1.0,
         min=-5.0,
         max=5.0,
         step=0.1,
@@ -183,7 +330,7 @@ def create_camera_for_object(context, focus_object):
     
     return camera_obj
 
-def create_focus_visualizer(context, location, camera):
+def create_focus_visualizer(context, location, camera, object_distance):
     """Create or update a semi-transparent plane at the focus point, facing the camera"""
     # Check if a visualizer plane already exists
     plane = None
@@ -192,13 +339,19 @@ def create_focus_visualizer(context, location, camera):
             plane = obj
             break
     
+    # Calculate an appropriate size based on distance to camera
+    # This ensures the focus plane remains visible even when far from the camera
+    base_size = 0.5
+    size_factor = max(1.0, object_distance / 5.0)  # Scale up with distance
+    scaled_size = base_size * size_factor
+    
     # Create a new plane if none exists
     if plane is None:
         # Save current selection
         selected_objs = context.selected_objects
         active_obj = context.active_object
         
-        bpy.ops.mesh.primitive_plane_add(size=0.5, location=location)
+        bpy.ops.mesh.primitive_plane_add(size=scaled_size, location=location)
         plane = context.active_object
         plane.name = FOCUS_PLANE_NAME
         
@@ -206,13 +359,6 @@ def create_focus_visualizer(context, location, camera):
         if FOCUS_PLANE_NAME not in bpy.data.materials:
             mat = bpy.data.materials.new(FOCUS_PLANE_NAME)
             mat.use_nodes = True
-            
-        # Restore previous selection
-        bpy.ops.object.select_all(action='DESELECT')
-        for obj in selected_objs:
-            obj.select_set(True)
-        if active_obj:
-            context.view_layer.objects.active = active_obj
             
             # Get the node tree
             nodes = mat.node_tree.nodes
@@ -234,9 +380,19 @@ def create_focus_visualizer(context, location, camera):
             
             # Assign material to the plane
             plane.data.materials.append(mat)
+        
+        # Restore previous selection
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in selected_objs:
+            obj.select_set(True)
+        if active_obj:
+            context.view_layer.objects.active = active_obj
     else:
-        # Update existing plane position
+        # Update existing plane position and size
         plane.location = location
+        
+        # Scale the plane based on distance
+        plane.scale = (scaled_size / 0.5, scaled_size / 0.5, scaled_size / 0.5)
     
     # Make plane face the camera
     direction = camera.location - location
@@ -257,53 +413,98 @@ def remove_focus_visualizer():
             obj.hide_viewport = True
             return
 
-def create_rim_light(context, focus_object, strength=1000.0, temperature=5500.0, offset=0.0, h_offset=0.0, v_offset=0.0):
-    """Create a rim light behind the object, pointed at the camera"""
-    # Get the camera and object positions
+def create_light(context, focus_object, light_name, strength=1000.0, temperature=5500.0, 
+                distance_offset=0.0, h_angle=0.0, v_offset=0.0, size_factor=1.0):
+    """Create a light at a specified position relative to the object"""
+    # Get the camera position
     camera = context.scene.camera
     if not camera or not focus_object:
         return None
     
-    # Calculate the rim light position
-    obj_location = focus_object.location
-    cam_location = camera.location
+    # Check if light already exists
+    light_obj = None
+    for obj in bpy.data.objects:
+        if obj.name == light_name and obj.type == 'LIGHT':
+            light_obj = obj
+            light_data = light_obj.data
+            break
     
-    # Calculate direction from camera to object
-    direction = (obj_location - cam_location).normalized()
+    # Create new light if it doesn't exist
+    if light_obj is None:
+        light_data = bpy.data.lights.new(name=light_name, type='AREA')
+        light_obj = bpy.data.objects.new(name=light_name, object_data=light_data)
+        context.collection.objects.link(light_obj)
     
-    # Calculate up and right vectors relative to the camera view
-    up_vector = Vector((0, 0, 1))
-    right_vector = direction.cross(up_vector).normalized()
-    
-    # Position the light behind the object (opposite to camera)
-    light_distance = (focus_object.dimensions.length * 1.5) + offset
-    light_location = obj_location + direction * light_distance
-    
-    # Apply horizontal offset (perpendicular to camera view direction)
-    light_location += right_vector * h_offset
-    
-    # Apply vertical offset (1 meter default + additional offset)
-    light_location.z += 1.0 + v_offset
-    
-    # Create the light
-    light_data = bpy.data.lights.new(name="ProductRimLight", type='AREA')
+    # Set light properties
     light_data.energy = strength
     light_data.color = kelvin_to_rgb(temperature)
     light_data.shape = 'RECTANGLE'
-    light_data.size = focus_object.dimensions.length
-    light_data.size_y = focus_object.dimensions.length / 2
     
-    light_obj = bpy.data.objects.new(name="ProductRimLight", object_data=light_data)
-    context.collection.objects.link(light_obj)
+    # Calculate dimensions based on object size and factor
+    obj_dimension = max(focus_object.dimensions.x, focus_object.dimensions.y, focus_object.dimensions.z)
+    light_data.size = obj_dimension * size_factor
+    light_data.size_y = obj_dimension * 0.5 * size_factor
     
-    # Position the light
+    # Calculate the light position
+    obj_location = focus_object.location.copy()
+    
+    # Convert horizontal angle from degrees to radians
+    h_angle_rad = math.radians(h_angle)
+    
+    # Calculate position using angle and distance
+    light_distance = (obj_dimension * 2.0) + distance_offset
+    light_location = obj_location.copy()
+    light_location.x += math.cos(h_angle_rad) * light_distance
+    light_location.y += math.sin(h_angle_rad) * light_distance
+    light_location.z += v_offset  # Apply vertical offset
+    
+    # Update position
     light_obj.location = light_location
     
-    # Make the light point at the object and then rotate 180 degrees
+    # Point light at object
     look_at_target(light_obj, obj_location)
     
-    # Add 180 degree rotation around local Y axis
-    light_obj.rotation_euler.y += math.radians(180)
+    return light_obj
+
+def update_light(context, light_name, focus_object, strength, temperature, 
+                distance_offset, h_angle, v_offset, size_factor):
+    """Update an existing light's properties"""
+    light_obj = None
+    for obj in bpy.data.objects:
+        if obj.name == light_name and obj.type == 'LIGHT':
+            light_obj = obj
+            break
+    
+    if not light_obj or not focus_object:
+        return None
+    
+    # Update light properties
+    light_obj.data.energy = strength
+    light_obj.data.color = kelvin_to_rgb(temperature)
+    
+    # Calculate dimensions based on object size and factor
+    obj_dimension = max(focus_object.dimensions.x, focus_object.dimensions.y, focus_object.dimensions.z)
+    light_obj.data.size = obj_dimension * size_factor
+    light_obj.data.size_y = obj_dimension * 0.5 * size_factor
+    
+    # Calculate the light position
+    obj_location = focus_object.location.copy()
+    
+    # Convert horizontal angle from degrees to radians
+    h_angle_rad = math.radians(h_angle)
+    
+    # Calculate position using angle and distance
+    light_distance = (obj_dimension * 2.0) + distance_offset
+    light_location = obj_location.copy()
+    light_location.x += math.cos(h_angle_rad) * light_distance
+    light_location.y += math.sin(h_angle_rad) * light_distance
+    light_location.z += v_offset  # Apply vertical offset
+    
+    # Update position
+    light_obj.location = light_location
+    
+    # Point light at object
+    look_at_target(light_obj, obj_location)
     
     return light_obj
 
@@ -363,20 +564,43 @@ def calculate_camera_position(context, focus_object, preset, camera_obj, offset=
     dimensions = focus_object.dimensions
     max_dimension = max(dimensions)
     
-    # Set focal length based on preset
+    # Set focal length and aperture based on preset only if not manually changed
     camera = camera_obj.data
-    if preset == "close":
-        camera.lens = 120.0
-        camera.dof.aperture_fstop = 0.8
-        distance_factor = 1.0
-    elif preset == "medium":
-        camera.lens = 70.0
-        camera.dof.aperture_fstop = 2.4
-        distance_factor = 1.5
-    else:  # "far"
-        camera.lens = 50.0
-        camera.dof.aperture_fstop = 8.0
-        distance_factor = 2.0
+    
+    if not props.manual_camera_settings:
+        if preset == "close":
+            camera.lens = 120.0
+            camera.dof.aperture_fstop = 0.8
+            distance_factor = 1.0
+            # Store values for future reference
+            props.manual_focal_length = 120.0
+            props.manual_aperture = 0.8
+        elif preset == "medium":
+            camera.lens = 70.0
+            camera.dof.aperture_fstop = 2.4
+            distance_factor = 1.5
+            # Store values for future reference
+            props.manual_focal_length = 70.0
+            props.manual_aperture = 2.4
+        else:  # "far"
+            camera.lens = 50.0
+            camera.dof.aperture_fstop = 8.0
+            distance_factor = 2.0
+            # Store values for future reference
+            props.manual_focal_length = 50.0
+            props.manual_aperture = 8.0
+    else:
+        # Use stored manual values
+        camera.lens = props.manual_focal_length
+        camera.dof.aperture_fstop = props.manual_aperture
+        
+        # Set distance factor based on preset
+        if preset == "close":
+            distance_factor = 1.0
+        elif preset == "medium":
+            distance_factor = 1.5
+        else:  # "far"
+            distance_factor = 2.0
     
     # Enable depth of field
     camera.dof.use_dof = True
@@ -454,53 +678,20 @@ def calculate_camera_position(context, focus_object, preset, camera_obj, offset=
             check_focus_visualizer_timer,
             first_interval=2.0
         )
-        
-    return focus_point
-
-def update_rim_light(self, context):
-    """Update rim light settings"""
-    light_obj = None
-    for obj in bpy.data.objects:
-        if obj.name == "ProductRimLight" and obj.type == 'LIGHT':
-            light_obj = obj
-            break
     
-    if light_obj:
-        props = context.scene.product_render_props
-        light_obj.data.energy = props.rim_light_strength
-        light_obj.data.color = kelvin_to_rgb(props.rim_light_temp)
+    # Calculate distance to object for focus visualizer scaling
+    object_distance = (camera_obj.location - focus_object.location).length
         
-        # Update light position based on offset
-        focus_object = props.focus_object
-        if focus_object and context.scene.camera:
-            # Get original direction from camera to object
-            obj_location = focus_object.location
-            cam_location = context.scene.camera.location
-            direction = (obj_location - cam_location).normalized()
-            
-            # Calculate up and right vectors relative to the view direction
-            up_vector = Vector((0, 0, 1))
-            right_vector = direction.cross(up_vector).normalized()
-            
-            # Calculate new position with distance offset
-            light_distance = (focus_object.dimensions.length * 1.5) + props.rim_light_offset
-            light_location = obj_location + direction * light_distance
-            
-            # Apply horizontal offset (perpendicular to view direction)
-            light_location += right_vector * props.rim_light_h_offset
-            
-            # Apply vertical offset (1 meter default + additional offset)
-            light_location.z = obj_location.z + 1.0 + props.rim_light_v_offset
-            
-            # Update position
-            light_obj.location = light_location
-            
-            # Update rotation to point at object and then rotate 180 degrees
-            look_at_target(light_obj, obj_location)
-            light_obj.rotation_euler.y += math.radians(180)
+    return focus_point, object_distance
 
-def update_camera_live(self, context):
-    """Live update function for camera parameters"""
+def update_camera_preset(self, context):
+    """Handle camera preset changes"""
+    # Reset manual flag when preset changes
+    self.manual_camera_settings = False
+    update_camera_live(self, context)
+
+def update_focus_only(self, context):
+    """Update just the focus point without changing other camera settings"""
     props = context.scene.product_render_props
     focus_object = props.focus_object
     camera = context.scene.camera
@@ -509,8 +700,11 @@ def update_camera_live(self, context):
         remove_focus_visualizer()
         return
     
+    # Set the manual flag to true since user is adjusting focus
+    props.manual_camera_settings = True
+    
     # Calculate focus point and update camera
-    focus_point = calculate_camera_position(
+    focus_point, object_distance = calculate_camera_position(
         context,
         focus_object, 
         props.camera_preset, 
@@ -523,129 +717,249 @@ def update_camera_live(self, context):
     
     # Create or update focus visualizer
     if focus_point:
-        create_focus_visualizer(context, focus_point, camera)
+        create_focus_visualizer(context, focus_point, camera, object_distance)
 
-# Timer for hiding the focus visualizer when not interacting
-def check_focus_visualizer_timer():
-    """Timer function to hide the focus visualizer when not in use"""
-    # This function will hide the focus visualizer when slider interaction stops
-    # Check all scenes for the property
-    for scene in bpy.data.scenes:
-        if "product_render_last_focus_time" in scene:
-            last_time = scene["product_render_last_focus_time"]
-            current_time = time.time()
-            
-            # If more than 2 seconds have passed since last interaction, hide the visualizer
-            if current_time - last_time > 2.0:
-                remove_focus_visualizer()
-                return None  # Remove the timer
-            
-    return 0.5  # Continue checking every 0.5 seconds
-
-# Operator classes
-class PRODUCT_OT_create_camera(bpy.types.Operator):
-    """Create a camera pointing at the selected object"""
-    bl_idname = "product.create_camera"
-    bl_label = "Create Camera"
-    bl_options = {'REGISTER', 'UNDO'}
+def update_camera_live(self, context):
+    """Live update function for camera parameters"""
+    props = context.scene.product_render_props
+    focus_object = props.focus_object
+    camera = context.scene.camera
     
-    def execute(self, context):
-        props = context.scene.product_render_props
-        focus_object = props.focus_object
-        
-        if not focus_object:
-            self.report({'ERROR'}, "Please select a focus object first")
-            return {'CANCELLED'}
-        
-        camera = create_camera_for_object(context, focus_object)
-        calculate_camera_position(
+    if not focus_object or not camera or camera.type != 'CAMERA':
+        remove_focus_visualizer()
+        return
+    
+    # Calculate focus point and update camera
+    focus_point, object_distance = calculate_camera_position(
+        context,
+        focus_object, 
+        props.camera_preset, 
+        camera, 
+        props.camera_offset,
+        props.camera_h_offset,
+        props.camera_v_offset,
+        props.focus_adjustment
+    )
+    
+    # Create or update focus visualizer
+    if focus_point:
+        create_focus_visualizer(context, focus_point, camera, object_distance)
+
+def update_key_light(self, context):
+    """Update key light settings"""
+    props = context.scene.product_render_props
+    focus_object = props.focus_object
+    
+    if not focus_object:
+        return
+    
+    # Check if light exists
+    light_exists = False
+    for obj in bpy.data.objects:
+        if obj.name == KEY_LIGHT_NAME and obj.type == 'LIGHT':
+            light_exists = True
+            break
+    
+    # Create or update the key light
+    if light_exists:
+        update_light(
             context,
-            focus_object, 
-            props.camera_preset, 
-            camera, 
-            props.camera_offset,
-            props.camera_h_offset,
-            props.camera_v_offset,
-            props.focus_adjustment
+            KEY_LIGHT_NAME,
+            focus_object,
+            props.key_light_strength,
+            props.key_light_temp,
+            props.key_light_offset,
+            props.key_light_h_offset,
+            props.key_light_v_offset,
+            props.key_light_size
         )
-        
-        # Select the camera
-        bpy.ops.object.select_all(action='DESELECT')
-        camera.select_set(True)
-        context.view_layer.objects.active = camera
-        
-        return {'FINISHED'}
-
-class PRODUCT_OT_update_camera(bpy.types.Operator):
-    """Update camera settings based on the selected preset"""
-    bl_idname = "product.update_camera"
-    bl_label = "Update Camera"
-    bl_options = {'REGISTER', 'UNDO'}
-    
-    def execute(self, context):
-        props = context.scene.product_render_props
-        focus_object = props.focus_object
-        camera = context.scene.camera
-        
-        if not focus_object:
-            self.report({'ERROR'}, "Please select a focus object first")
-            return {'CANCELLED'}
-            
-        if not camera or camera.type != 'CAMERA':
-            self.report({'ERROR'}, "No active camera found")
-            return {'CANCELLED'}
-        
-        calculate_camera_position(
+    else:
+        create_light(
             context,
-            focus_object, 
-            props.camera_preset, 
-            camera, 
-            props.camera_offset,
-            props.camera_h_offset,
-            props.camera_v_offset,
-            props.focus_adjustment
+            focus_object,
+            KEY_LIGHT_NAME,
+            props.key_light_strength,
+            props.key_light_temp,
+            props.key_light_offset,
+            props.key_light_h_offset,
+            props.key_light_v_offset,
+            props.key_light_size
         )
-        
-        return {'FINISHED'}
 
-class PRODUCT_OT_create_lights(bpy.types.Operator):
-    """Create lighting setup for product rendering"""
-    bl_idname = "product.create_lights"
-    bl_label = "Create Lights"
-    bl_options = {'REGISTER', 'UNDO'}
+def update_fill_light(self, context):
+    """Update fill light settings"""
+    props = context.scene.product_render_props
+    focus_object = props.focus_object
     
-    def execute(self, context):
-        props = context.scene.product_render_props
-        focus_object = props.focus_object
-        
-        if not focus_object:
-            self.report({'ERROR'}, "Please select a focus object first")
-            return {'CANCELLED'}
-            
-        if not context.scene.camera:
-            self.report({'ERROR'}, "No camera found. Please create a camera first.")
-            return {'CANCELLED'}
-        
-        # Create rim light
-        light = create_rim_light(
-            context, 
-            focus_object, 
-            strength=props.rim_light_strength,
-            temperature=props.rim_light_temp,
-            offset=props.rim_light_offset,
-            h_offset=props.rim_light_h_offset,
-            v_offset=props.rim_light_v_offset
+    if not focus_object:
+        return
+    
+    # Check if light exists
+    light_exists = False
+    for obj in bpy.data.objects:
+        if obj.name == FILL_LIGHT_NAME and obj.type == 'LIGHT':
+            light_exists = True
+            break
+    
+    # Create or update the fill light
+    if light_exists:
+        update_light(
+            context,
+            FILL_LIGHT_NAME,
+            focus_object,
+            props.fill_light_strength,
+            props.fill_light_temp,
+            props.fill_light_offset,
+            props.fill_light_h_offset,
+            props.fill_light_v_offset,
+            props.fill_light_size
         )
+    else:
+        create_light(
+            context,
+            focus_object,
+            FILL_LIGHT_NAME,
+            props.fill_light_strength,
+            props.fill_light_temp,
+            props.fill_light_offset,
+            props.fill_light_h_offset,
+            props.fill_light_v_offset,
+            props.fill_light_size
+        )
+
+def update_rim_light(self, context):
+    """Update rim light settings"""
+    props = context.scene.product_render_props
+    focus_object = props.focus_object
+    
+    if not focus_object:
+        return
+    
+    # Check if light exists
+    light_exists = False
+    for obj in bpy.data.objects:
+        if obj.name == RIM_LIGHT_NAME and obj.type == 'LIGHT':
+            light_exists = True
+            break
+    
+    # Create or update the rim light
+    if light_exists:
+        update_light(
+            context,
+            RIM_LIGHT_NAME,
+            focus_object,
+            props.rim_light_strength,
+            props.rim_light_temp,
+            props.rim_light_offset,
+            props.rim_light_h_offset,
+            props.rim_light_v_offset,
+            props.rim_light_size
+        )
+    else:
+        create_light(
+            context,
+            focus_object,
+            RIM_LIGHT_NAME,
+            props.rim_light_strength,
+            props.rim_light_temp,
+            props.rim_light_offset,
+            props.rim_light_h_offset,
+            props.rim_light_v_offset,
+            props.rim_light_size
+        )
+
+
+
+
+class PRODUCT_PT_lighting_panel(bpy.types.Panel):
+    """Panel for product lighting setup"""
+    bl_label = "Lighting Setup"
+    bl_idname = "PRODUCT_PT_lighting_panel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'Product Render'
+    
+    def draw(self, context):
+        layout = self.layout
+        props = context.scene.product_render_props
         
-        if light:
-            self.report({'INFO'}, "Lighting setup created")
+        # Create lights button
+        row = layout.row()
+        row.operator("product.create_lights")
+        
+        layout.separator()
+        
+        # KEY LIGHT collapsible section
+        key_box = layout.box()
+        key_row = key_box.row()
+        key_row.prop(props, "key_light_expand", 
+                    icon="TRIA_DOWN" if props.key_light_expand else "TRIA_RIGHT", 
+                    icon_only=True, emboss=False)
+        key_row.label(text="Key Light")
+        
+        # Show key light settings if expanded
+        if props.key_light_expand:
+            # Properties section
+            props_box = key_box.box()
+            props_box.label(text="Properties:")
+            props_box.prop(props, "key_light_strength", text="Strength")
+            props_box.prop(props, "key_light_temp", text="Temperature")
+            props_box.prop(props, "key_light_size", text="Size")
             
-            # Select the light
-            bpy.ops.object.select_all(action='DESELECT')
-            light.select_set(True)
-            context.view_layer.objects.active = light
+            # Position section
+            pos_box = key_box.box()
+            pos_box.label(text="Position:")
+            pos_box.prop(props, "key_light_offset", text="Distance")
+            pos_box.prop(props, "key_light_h_offset", text="Horizontal Angle")
+            pos_box.prop(props, "key_light_v_offset", text="Vertical Offset")
         
-        return {'FINISHED'}
+        # FILL LIGHT collapsible section
+        fill_box = layout.box()
+        fill_row = fill_box.row()
+        fill_row.prop(props, "fill_light_expand", 
+                     icon="TRIA_DOWN" if props.fill_light_expand else "TRIA_RIGHT", 
+                     icon_only=True, emboss=False)
+        fill_row.label(text="Fill Light")
+        
+        # Show fill light settings if expanded
+        if props.fill_light_expand:
+            # Properties section
+            props_box = fill_box.box()
+            props_box.label(text="Properties:")
+            props_box.prop(props, "fill_light_strength", text="Strength")
+            props_box.prop(props, "fill_light_temp", text="Temperature")
+            props_box.prop(props, "fill_light_size", text="Size")
+            
+            # Position section
+            pos_box = fill_box.box()
+            pos_box.label(text="Position:")
+            pos_box.prop(props, "fill_light_offset", text="Distance")
+            pos_box.prop(props, "fill_light_h_offset", text="Horizontal Angle")
+            pos_box.prop(props, "fill_light_v_offset", text="Vertical Offset")
+        
+        # RIM LIGHT collapsible section
+        rim_box = layout.box()
+        rim_row = rim_box.row()
+        rim_row.prop(props, "rim_light_expand", 
+                    icon="TRIA_DOWN" if props.rim_light_expand else "TRIA_RIGHT", 
+                    icon_only=True, emboss=False)
+        rim_row.label(text="Rim Light")
+        
+        # Show rim light settings if expanded
+        if props.rim_light_expand:
+            # Properties section
+            props_box = rim_box.box()
+            props_box.label(text="Properties:")
+            props_box.prop(props, "rim_light_strength", text="Strength")
+            props_box.prop(props, "rim_light_temp", text="Temperature")
+            props_box.prop(props, "rim_light_size", text="Size")
+            
+            # Position section
+            pos_box = rim_box.box()
+            pos_box.label(text="Position:")
+            pos_box.prop(props, "rim_light_offset", text="Distance")
+            pos_box.prop(props, "rim_light_h_offset", text="Horizontal Angle")
+            pos_box.prop(props, "rim_light_v_offset", text="Vertical Offset")
 
 # UI Panel classes
 class PRODUCT_PT_render_panel(bpy.types.Panel):
@@ -688,70 +1002,21 @@ class PRODUCT_PT_render_panel(bpy.types.Panel):
         box.label(text="Focus:")
         box.prop(props, "focus_adjustment")
         
-        # Update camera button (for preset changes)
-        row = layout.row()
-        row.operator("product.update_camera", text="Update Preset")
-        
         # Camera quick settings
         camera = context.scene.camera
         if camera and camera.type == 'CAMERA':
             layout.separator()
             box = layout.box()
             box.label(text="Current Camera Settings:")
-            box.prop(camera.data, "lens", text="Focal Length")
-            if hasattr(camera.data.dof, "aperture_fstop"):  # For compatibility with different Blender versions
-                box.prop(camera.data.dof, "aperture_fstop", text="Aperture")
-            elif hasattr(camera.data.dof, "aperture_fstop"):
-                box.prop(camera.data.dof, "aperture_fstop", text="Aperture")
-
-class PRODUCT_PT_lighting_panel(bpy.types.Panel):
-    """Panel for product lighting setup"""
-    bl_label = "Lighting Setup"
-    bl_idname = "PRODUCT_PT_lighting_panel"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = 'Product Render'
-    
-    def draw(self, context):
-        layout = self.layout
-        props = context.scene.product_render_props
-        
-        # Create lights button
-        row = layout.row()
-        row.operator("product.create_lights")
-        
-        layout.separator()
-        
-        # Light adjustment sliders
-        box = layout.box()
-        box.label(text="Rim Light Properties:")
-        box.prop(props, "rim_light_strength")
-        box.prop(props, "rim_light_temp")
-        
-        # Light positioning
-        box = layout.box()
-        box.label(text="Rim Light Position:")
-        box.prop(props, "rim_light_offset")
-        box.prop(props, "rim_light_h_offset")
-        box.prop(props, "rim_light_v_offset")
-        
-        # Display current light info if it exists
-        rim_light = None
-        for obj in bpy.data.objects:
-            if obj.name == "ProductRimLight" and obj.type == 'LIGHT':
-                rim_light = obj
-                break
-        
-        if rim_light:
-            layout.separator()
-            box = layout.box()
-            box.label(text="Light Information:")
-            box.label(text=f"Position: {rim_light.location.x:.2f}, {rim_light.location.y:.2f}, {rim_light.location.z:.2f}")
-            box.label(text=f"Size: {rim_light.data.size:.2f} x {rim_light.data.size_y:.2f}")
-            # Show distance to object
-            if props.focus_object:
-                distance = (rim_light.location - props.focus_object.location).length
-                box.label(text=f"Distance to object: {distance:.2f}m")
+            
+            # Use custom property for focal length to maintain when moving camera
+            row = box.row()
+            row.prop(camera.data, "lens", text="Focal Length")
+            
+            # Add aperture control
+            if hasattr(camera.data.dof, "aperture_fstop"):
+                row = box.row()
+                row.prop(camera.data.dof, "aperture_fstop", text="Aperture")
 
 class PRODUCT_OT_reset_object_position(bpy.types.Operator):
     """Reset object to its original position"""
@@ -778,11 +1043,128 @@ class PRODUCT_OT_reset_object_position(bpy.types.Operator):
         
         return {'FINISHED'}
 
-# Registration
+class PRODUCT_OT_create_lights(bpy.types.Operator):
+    """Create lighting setup for product rendering"""
+    bl_idname = "product.create_lights"
+    bl_label = "Create Lights"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        props = context.scene.product_render_props
+        focus_object = props.focus_object
+        
+        if not focus_object:
+            self.report({'ERROR'}, "Please select a focus object first")
+            return {'CANCELLED'}
+            
+        if not context.scene.camera:
+            self.report({'ERROR'}, "No camera found. Please create a camera first.")
+            return {'CANCELLED'}
+        
+        # Create key light
+        key_light = create_light(
+            context, 
+            focus_object, 
+            KEY_LIGHT_NAME,
+            strength=props.key_light_strength,
+            temperature=props.key_light_temp,
+            distance_offset=props.key_light_offset,
+            h_angle=props.key_light_h_offset,
+            v_offset=props.key_light_v_offset,
+            size_factor=props.key_light_size
+        )
+        
+        # Create fill light
+        fill_light = create_light(
+            context, 
+            focus_object, 
+            FILL_LIGHT_NAME,
+            strength=props.fill_light_strength,
+            temperature=props.fill_light_temp,
+            distance_offset=props.fill_light_offset,
+            h_angle=props.fill_light_h_offset,
+            v_offset=props.fill_light_v_offset,
+            size_factor=props.fill_light_size
+        )
+        
+        # Create rim light
+        rim_light = create_light(
+            context, 
+            focus_object, 
+            RIM_LIGHT_NAME,
+            strength=props.rim_light_strength,
+            temperature=props.rim_light_temp,
+            distance_offset=props.rim_light_offset,
+            h_angle=props.rim_light_h_offset,
+            v_offset=props.rim_light_v_offset,
+            size_factor=props.rim_light_size
+        )
+        
+        if key_light and fill_light and rim_light:
+            self.report({'INFO'}, "Lighting setup created")
+            
+            # Select the key light
+            bpy.ops.object.select_all(action='DESELECT')
+            key_light.select_set(True)
+            context.view_layer.objects.active = key_light
+        
+        return {'FINISHED'}
+
+# Operator classes
+class PRODUCT_OT_create_camera(bpy.types.Operator):
+    """Create a camera pointing at the selected object"""
+    bl_idname = "product.create_camera"
+    bl_label = "Create Camera"
+    bl_options = {'REGISTER', 'UNDO'}
+    
+    def execute(self, context):
+        props = context.scene.product_render_props
+        focus_object = props.focus_object
+        
+        if not focus_object:
+            self.report({'ERROR'}, "Please select a focus object first")
+            return {'CANCELLED'}
+        
+        camera = create_camera_for_object(context, focus_object)
+        focus_point, object_distance = calculate_camera_position(
+            context,
+            focus_object, 
+            props.camera_preset, 
+            camera, 
+            props.camera_offset,
+            props.camera_h_offset,
+            props.camera_v_offset,
+            props.focus_adjustment
+        )
+        
+        # Select the camera
+        bpy.ops.object.select_all(action='DESELECT')
+        camera.select_set(True)
+        context.view_layer.objects.active = camera
+        
+        return {'FINISHED'}
+
+# Timer for hiding the focus visualizer when not interacting
+def check_focus_visualizer_timer():
+    """Timer function to hide the focus visualizer when not in use"""
+    # This function will hide the focus visualizer when slider interaction stops
+    # Check all scenes for the property
+    for scene in bpy.data.scenes:
+        if "product_render_last_focus_time" in scene:
+            last_time = scene["product_render_last_focus_time"]
+            current_time = time.time()
+            
+            # If more than 2 seconds have passed since last interaction, hide the visualizer
+            if current_time - last_time > 2.0:
+                remove_focus_visualizer()
+                return None  # Remove the timer
+            
+    return 0.5  # Continue checking every 0.5 seconds# Product Render Setup Add-on for Blender
+
+        # Registration
 classes = (
     ProductRenderProperties,
     PRODUCT_OT_create_camera,
-    PRODUCT_OT_update_camera,
     PRODUCT_OT_create_lights,
     PRODUCT_OT_reset_object_position,
     PRODUCT_PT_render_panel,
