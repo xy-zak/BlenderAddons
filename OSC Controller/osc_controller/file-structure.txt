@@ -1,0 +1,24 @@
+osc_controller/
+├── __init__.py                 # Main addon registration file
+├── ui/                         # UI-related modules
+│   ├── __init__.py             # Makes ui a proper package
+│   ├── main_panel.py           # Main panel UI
+│   ├── mappings_panel.py       # Mappings panel UI
+│   ├── recording_panel.py      # Recording panel UI
+│   ├── debug_panel.py          # Debug panel UI
+│   └── info_panel.py           # Plugin info panel UI
+├── operators/                  # Operator classes
+│   ├── __init__.py             # Makes operators a proper package
+│   ├── server_ops.py           # Server start/stop operators
+│   ├── mapping_ops.py          # Mapping-related operators
+│   ├── recording_ops.py        # Recording-related operators
+│   └── utility_ops.py          # Utility operators (docs, drivers)
+├── core/                       # Core functionality
+│   ├── __init__.py             # Makes core a proper package
+│   ├── osc_server.py           # OSC server logic and variables
+│   ├── property_groups.py      # Property definitions
+│   ├── driver_functions.py     # Driver-related functionality
+│   ├── recording.py            # Recording-related functions
+│   └── utils.py                # Utility functions
+└── vendor/                     # Third-party dependencies
+    └── pythonosc/              # Bundled python-osc library
