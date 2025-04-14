@@ -1,0 +1,150 @@
+/*
+ * WebSocket Test for Blender - ESP32 Example
+ * 
+ * This sketch demonstrates how to connect an ESP32 to the Blender WebSocket addon
+ * and send simple test messages.
+ * 
+ * You need to install:
+ * - ArduinoWebsockets by Gil Maimon (for WebSocket communication)
+ * - ArduinoJson by Benoit Blanchon (for JSON formatting)
+ */
+
+#include <ArduinoWebsockets.h>
+#include <ArduinoJson.h>
+#include <WiFi.h>
+
+// WiFi credentials
+const char* ssid = "YOUR_WIFI_SSID";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// WebSocket server details (Blender addon)
+const char* websocket_server_host = "192.168.1.100"; // Change to your computer's IP
+const int websocket_server_port = 8765;
+
+// Pin for a test button (optional)
+const int BUTTON_PIN = 0;  // Built-in button on most ESP32 dev boards
+bool lastButtonState = false;
+
+// Using namespace for websockets library
+using namespace websockets;
+
+// Create websocket client
+WebsocketsClient client;
+
+// Function to connect to WebSocket server
+void connectToServer() {
+  Serial.println("Connecting to WebSocket server...");
+  
+  while (!client.connect(websocket_server_host, websocket_server_port, "/")) {
+    Serial.println("Failed to connect to WebSocket server. Retrying in 2 seconds...");
+    delay(2000);
+  }
+  
+  Serial.println("Connected to Blender WebSocket server!");
+  
+  // Set up message handler
+  client.onMessage([&](WebsocketsMessage message) {
+    Serial.print("Got message from server: ");
+    Serial.println(message.data());
+  });
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("WebSocket Test Client Starting");
+  
+  // Set up button pin
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  
+  // Connect to WiFi
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println();
+  Serial.print("Connected to WiFi, IP address: ");
+  Serial.println(WiFi.localIP());
+  
+  // Connect to WebSocket server
+  connectToServer();
+  
+  // Send initial message
+  sendTestMessage("ESP32 connected!");
+}
+
+// Function to send a test message
+void sendTestMessage(const char* messageText) {
+  // Check if we're connected, reconnect if needed
+  if (!client.available()) {
+    connectToServer();
+  }
+  
+  // Create a JSON document
+  StaticJsonDocument<200> doc;
+  doc["type"] = "test_message";
+  doc["message"] = messageText;
+  doc["timestamp"] = millis();
+  
+  // Serialize JSON to string
+  String jsonOutput;
+  serializeJson(doc, jsonOutput);
+  
+  // Send the message
+  client.send(jsonOutput);
+  Serial.print("Sent message: ");
+  Serial.println(jsonOutput);
+}
+
+// Function to send sensor data
+void sendSensorData() {
+  // Read a sensor (using analog reading as example)
+  int sensorValue = analogRead(34);  // Using GPIO34 as analog input
+  
+  // Create a JSON document
+  StaticJsonDocument<200> doc;
+  doc["sensor"] = "analog";
+  doc["value"] = sensorValue;
+  doc["voltage"] = sensorValue * 3.3 / 4095.0;
+  
+  // Serialize JSON to string
+  String jsonOutput;
+  serializeJson(doc, jsonOutput);
+  
+  // Send the message
+  client.send(jsonOutput);
+}
+
+void loop() {
+  // Keep the connection alive with polling
+  if (client.available()) {
+    client.poll();
+    
+    // Check button state
+    bool buttonState = !digitalRead(BUTTON_PIN);  // Inverted because of pull-up
+    
+    if (buttonState != lastButtonState && buttonState) {
+      // Button pressed
+      sendTestMessage("Button pressed!");
+    }
+    lastButtonState = buttonState;
+    
+    // Send sensor data periodically (every 2 seconds)
+    static unsigned long lastSensorTime = 0;
+    if (millis() - lastSensorTime > 2000) {
+      sendSensorData();
+      lastSensorTime = millis();
+    }
+    
+  } else {
+    // Try to reconnect
+    Serial.println("Connection lost, reconnecting...");
+    connectToServer();
+  }
+  
+  // Small delay
+  delay(100);
+}
