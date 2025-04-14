@@ -1,0 +1,27 @@
+WiFi.begin(ssid, password);
+Serial.print("Connecting to WiFi: ");
+Serial.println(ssid);
+
+int attempts = 0;
+while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    Serial.print(WiFi.status()); // This will print the status code
+    attempts++;
+}
+
+if (WiFi.status() == WL_CONNECTED) {
+    Serial.println();
+    Serial.print("Connected to WiFi, IP address: ");
+    Serial.println(WiFi.localIP());
+} else {
+    Serial.println();
+    Serial.print("Failed to connect. Status code: ");
+    Serial.println(WiFi.status());
+    // WiFi status codes:
+    // 0 : WL_IDLE_STATUS when WiFi is changing state
+    // 1 : WL_NO_SSID_AVAIL if the SSID cannot be found
+    // 3 : WL_CONNECTED if connected
+    // 4 : WL_CONNECT_FAILED if password is incorrect
+    // 6 : WL_DISCONNECTED if not connected to a network
+}
