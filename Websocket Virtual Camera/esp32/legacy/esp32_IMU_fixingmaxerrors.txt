@@ -1,0 +1,424 @@
+#include <Arduino.h>
+#include <Wire.h>
+#include <WiFi.h>
+#include <WebSocketsClient.h>
+#include <ArduinoJson.h>
+
+// WiFi and WebSocket settings
+const char* ssid = "YourWiFiName";
+const char* password = "YourWiFiPassword";
+const char* websocket_server_host = "192.168.1.100";  // Your Blender machine IP
+const uint16_t websocket_server_port = 8765;
+
+WebSocketsClient webSocket;
+
+// IMU data
+float AccX, AccY, AccZ;
+float AccX2, AccY2, AccZ2;
+float GyroX, GyroY, GyroZ;
+float GyroX2, GyroY2, GyroZ2;
+float elapsedTime, currentTime, previousTime;
+float accAngleX, accAngleY;
+float accAngleX2, accAngleY2;
+float gyroAngleX, gyroAngleY, gyroAngleZ;
+float gyroAngleX2, gyroAngleY2, gyroAngleZ2;
+
+// Error values
+float AccErrorX, AccErrorY, AccErrorZ, GyroErrorX, GyroErrorY, GyroErrorZ;
+float AccErrorX2, AccErrorY2, AccErrorZ2, GyroErrorX2, GyroErrorY2, GyroErrorZ2;
+
+// Filter values for spike detection
+float prevGyroX, prevGyroY, prevGyroZ;
+float prevGyroX2, prevGyroY2, prevGyroZ2;
+
+// Last send time for rate limiting
+unsigned long lastSendTime = 0;
+const int sendInterval = 50;  // Send data every 50ms (20Hz)
+
+void setup_wifi() {
+  Serial.println("Connecting to WiFi...");
+  WiFi.begin(ssid, password);
+  
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void setup_websocket() {
+  // Server address, port, and URL
+  webSocket.begin(websocket_server_host, websocket_server_port, "/");
+  
+  // Event handler
+  webSocket.onEvent([](WStype_t type, uint8_t * payload, size_t length) {
+    switch(type) {
+      case WStype_DISCONNECTED:
+        Serial.println("Disconnected from WebSocket server");
+        break;
+      case WStype_CONNECTED:
+        Serial.println("Connected to WebSocket server");
+        break;
+      case WStype_TEXT:
+        Serial.printf("Received message: %s\n", payload);
+        break;
+    }
+  });
+  
+  // Try reconnecting every 5000ms if connection fails
+  webSocket.setReconnectInterval(5000);
+}
+
+void calculate_IMU_error() {
+  int c = 0;
+  
+  // Reset error values
+  AccErrorX = AccErrorY = AccErrorZ = 0;
+  GyroErrorX = GyroErrorY = GyroErrorZ = 0;
+  AccErrorX2 = AccErrorY2 = AccErrorZ2 = 0;
+  GyroErrorX2 = GyroErrorY2 = GyroErrorZ2 = 0;
+  
+  // Calculate error for IMU 1
+  Serial.println("Calibrating IMU 1...");
+  while (c < 200) {
+    Wire.beginTransmission(0x68);
+    Wire.write(0x3B);
+    Wire.endTransmission(false);
+    Wire.requestFrom(0x68, 6, true);
+    AccX = (Wire.read() << 8 | Wire.read()) / 16384.0;
+    AccY = (Wire.read() << 8 | Wire.read()) / 16384.0;
+    AccZ = (Wire.read() << 8 | Wire.read()) / 16384.0;
+    
+    // Sum all readings
+    AccErrorX += AccX;
+    AccErrorY += AccY;
+    // For Z axis, subtract 1g to account for gravity
+    AccErrorZ += (AccZ - 1.0);
+    
+    c++;
+  }
+  
+  // Divide the sum by 200 to get the error value
+  AccErrorX /= 200;
+  AccErrorY /= 200;
+  AccErrorZ /= 200;
+  
+  c = 0;
+  
+  // Read gyro values 200 times for IMU 1
+  while (c < 200) {
+    Wire.beginTransmission(0x68);
+    Wire.write(0x43);
+    Wire.endTransmission(false);
+    Wire.requestFrom(0x68, 6, true);
+    GyroX = (Wire.read() << 8 | Wire.read()) / 131.0;
+    GyroY = (Wire.read() << 8 | Wire.read()) / 131.0;
+    GyroZ = (Wire.read() << 8 | Wire.read()) / 131.0;
+    
+    // Sum all readings
+    GyroErrorX += GyroX;
+    GyroErrorY += GyroY;
+    GyroErrorZ += GyroZ;
+    
+    c++;
+  }
+  
+  // Divide the sum by 200 to get the error value
+  GyroErrorX /= 200;
+  GyroErrorY /= 200;
+  GyroErrorZ /= 200;
+  
+  // Now do the same for IMU 2
+  c = 0;
+  Serial.println("Calibrating IMU 2...");
+  while (c < 200) {
+    Wire.beginTransmission(0x69);
+    Wire.write(0x3B);
+    Wire.endTransmission(false);
+    Wire.requestFrom(0x69, 6, true);
+    AccX2 = (Wire.read() << 8 | Wire.read()) / 16384.0;
+    AccY2 = (Wire.read() << 8 | Wire.read()) / 16384.0;
+    AccZ2 = (Wire.read() << 8 | Wire.read()) / 16384.0;
+    
+    // Sum all readings
+    AccErrorX2 += AccX2;
+    AccErrorY2 += AccY2;
+    AccErrorZ2 += (AccZ2 - 1.0);
+    
+    c++;
+  }
+  
+  // Divide the sum by 200 to get the error value
+  AccErrorX2 /= 200;
+  AccErrorY2 /= 200;
+  AccErrorZ2 /= 200;
+  
+  c = 0;
+  
+  // Read gyro values 200 times for IMU 2
+  while (c < 200) {
+    Wire.beginTransmission(0x69);
+    Wire.write(0x43);
+    Wire.endTransmission(false);
+    Wire.requestFrom(0x69, 6, true);
+    GyroX2 = (Wire.read() << 8 | Wire.read()) / 131.0;
+    GyroY2 = (Wire.read() << 8 | Wire.read()) / 131.0;
+    GyroZ2 = (Wire.read() << 8 | Wire.read()) / 131.0;
+    
+    // Sum all readings
+    GyroErrorX2 += GyroX2;
+    GyroErrorY2 += GyroY2;
+    GyroErrorZ2 += GyroZ2;
+    
+    c++;
+  }
+  
+  // Divide the sum by 200 to get the error value
+  GyroErrorX2 /= 200;
+  GyroErrorY2 /= 200;
+  GyroErrorZ2 /= 200;
+  
+  // Print the error values on the Serial Monitor
+  Serial.println("=== IMU 1 Calibration ===");
+  Serial.print("AccErrorX: "); Serial.println(AccErrorX);
+  Serial.print("AccErrorY: "); Serial.println(AccErrorY);
+  Serial.print("AccErrorZ: "); Serial.println(AccErrorZ);
+  Serial.print("GyroErrorX: "); Serial.println(GyroErrorX);
+  Serial.print("GyroErrorY: "); Serial.println(GyroErrorY);
+  Serial.print("GyroErrorZ: "); Serial.println(GyroErrorZ);
+  
+  Serial.println("=== IMU 2 Calibration ===");
+  Serial.print("AccErrorX2: "); Serial.println(AccErrorX2);
+  Serial.print("AccErrorY2: "); Serial.println(AccErrorY2);
+  Serial.print("AccErrorZ2: "); Serial.println(AccErrorZ2);
+  Serial.print("GyroErrorX2: "); Serial.println(GyroErrorX2);
+  Serial.print("GyroErrorY2: "); Serial.println(GyroErrorY2);
+  Serial.print("GyroErrorZ2: "); Serial.println(GyroErrorZ2);
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println("\nSerial Communication active");
+  
+  // Initialize I2C communication
+  Wire.begin(21, 22);
+  
+  // Set up IMU 1 (0x68)
+  Wire.beginTransmission(0x68);
+  Wire.write(0x6B);
+  Wire.write(0x00); // Wake up MPU-6050
+  Wire.endTransmission(true);
+  
+  // Set accelerometer range to ±8g (more range for acceleration)
+  Wire.beginTransmission(0x68);
+  Wire.write(0x1C);
+  Wire.write(0x10); // ±8g range (0x10)
+  Wire.endTransmission(true);
+  
+  // Set gyro range to ±500 deg/s
+  Wire.beginTransmission(0x68);
+  Wire.write(0x1B);
+  Wire.write(0x08); // ±500 deg/s (0x08)
+  Wire.endTransmission(true);
+  
+  // Set up IMU 2 (0x69)
+  Wire.beginTransmission(0x69);
+  Wire.write(0x6B);
+  Wire.write(0x00); // Wake up MPU-6050
+  Wire.endTransmission(true);
+  
+  // Set accelerometer range to ±8g
+  Wire.beginTransmission(0x69);
+  Wire.write(0x1C);
+  Wire.write(0x10); // ±8g range (0x10)
+  Wire.endTransmission(true);
+  
+  // Set gyro range to ±500 deg/s
+  Wire.beginTransmission(0x69);
+  Wire.write(0x1B);
+  Wire.write(0x08); // ±500 deg/s (0x08)
+  Wire.endTransmission(true);
+  
+  // Calculate error values
+  calculate_IMU_error();
+  
+  // Set initial time
+  previousTime = millis();
+  
+  // Connect to WiFi and WebSocket
+  setup_wifi();
+  setup_websocket();
+  
+  Serial.println("Setup complete");
+  delay(1000);
+}
+
+bool readIMU(uint8_t addr, float &accX, float &accY, float &accZ, float &gyroX, float &gyroY, float &gyroZ) {
+  Wire.beginTransmission(addr);
+  Wire.write(0x3B);
+  if (Wire.endTransmission(false) != 0) {
+    Serial.printf("Error reading from IMU at 0x%02X\n", addr);
+    return false;
+  }
+  
+  // Request 14 bytes (accelerometer, temperature, and gyro data)
+  if (Wire.requestFrom(addr, 14, true) != 14) {
+    Serial.printf("Failed to receive all data from IMU at 0x%02X\n", addr);
+    return false;
+  }
+  
+  // Read accelerometer data
+  int16_t accXRaw = Wire.read() << 8 | Wire.read();
+  int16_t accYRaw = Wire.read() << 8 | Wire.read();
+  int16_t accZRaw = Wire.read() << 8 | Wire.read();
+  
+  // Skip temperature data
+  Wire.read(); Wire.read();
+  
+  // Read gyroscope data
+  int16_t gyroXRaw = Wire.read() << 8 | Wire.read();
+  int16_t gyroYRaw = Wire.read() << 8 | Wire.read();
+  int16_t gyroZRaw = Wire.read() << 8 | Wire.read();
+  
+  // Convert to physical values
+  // Using 4096.0 for ±8g range (instead of 16384.0 for ±2g)
+  accX = accXRaw / 4096.0;
+  accY = accYRaw / 4096.0;
+  accZ = accZRaw / 4096.0;
+  
+  // Using 65.5 for ±500 deg/s range (instead of 131.0 for ±250 deg/s)
+  gyroX = gyroXRaw / 65.5;
+  gyroY = gyroYRaw / 65.5;
+  gyroZ = gyroZRaw / 65.5;
+  
+  return true;
+}
+
+// Filter out spikes in gyro readings
+float filterGyroSpike(float current, float previous, float threshold = 100.0) {
+  if (fabs(current - previous) > threshold) {
+    return previous;
+  }
+  return current;
+}
+
+void loop() {
+  // Update WebSocket client
+  webSocket.loop();
+  
+  // Read from IMUs
+  bool imu1Success = readIMU(0x68, AccX, AccY, AccZ, GyroX, GyroY, GyroZ);
+  bool imu2Success = readIMU(0x69, AccX2, AccY2, AccZ2, GyroX2, GyroY2, GyroZ2);
+  
+  // Calculate elapsed time
+  currentTime = millis();
+  elapsedTime = (currentTime - previousTime) / 1000.0;
+  previousTime = currentTime;
+  
+  if (imu1Success) {
+    // Apply calibration corrections to IMU 1
+    AccX -= AccErrorX;
+    AccY -= AccErrorY;
+    AccZ -= AccErrorZ;
+    
+    GyroX -= GyroErrorX;
+    GyroY -= GyroErrorY;
+    GyroZ -= GyroErrorZ;
+    
+    // Filter out gyro spikes
+    GyroX = filterGyroSpike(GyroX, prevGyroX);
+    GyroY = filterGyroSpike(GyroY, prevGyroY);
+    GyroZ = filterGyroSpike(GyroZ, prevGyroZ);
+    
+    prevGyroX = GyroX;
+    prevGyroY = GyroY;
+    prevGyroZ = GyroZ;
+    
+    // Calculate angles
+    gyroAngleX += GyroX * elapsedTime;
+    gyroAngleY += GyroY * elapsedTime;
+    gyroAngleZ += GyroZ * elapsedTime;
+  }
+  
+  if (imu2Success) {
+    // Apply calibration corrections to IMU 2
+    AccX2 -= AccErrorX2;
+    AccY2 -= AccErrorY2;
+    AccZ2 -= AccErrorZ2;
+    
+    GyroX2 -= GyroErrorX2;
+    GyroY2 -= GyroErrorY2;
+    GyroZ2 -= GyroErrorZ2;
+    
+    // Filter out gyro spikes
+    GyroX2 = filterGyroSpike(GyroX2, prevGyroX2);
+    GyroY2 = filterGyroSpike(GyroY2, prevGyroY2);
+    GyroZ2 = filterGyroSpike(GyroZ2, prevGyroZ2);
+    
+    prevGyroX2 = GyroX2;
+    prevGyroY2 = GyroY2;
+    prevGyroZ2 = GyroZ2;
+    
+    // Calculate angles
+    gyroAngleX2 += GyroX2 * elapsedTime;
+    gyroAngleY2 += GyroY2 * elapsedTime;
+    gyroAngleZ2 += GyroZ2 * elapsedTime;
+  }
+  
+  // Send data to WebSocket server at controlled rate
+  if (millis() - lastSendTime >= sendInterval && webSocket.isConnected()) {
+    lastSendTime = millis();
+    
+    // Create JSON document for IMU data
+    StaticJsonDocument<512> doc;
+    doc["type"] = "IMU";
+    
+    // Add IMU 1 data
+    doc["rot_x"] = gyroAngleX;
+    doc["rot_y"] = gyroAngleY;
+    doc["rot_z"] = gyroAngleZ;
+    doc["loc_x"] = AccX;
+    doc["loc_y"] = AccY;
+    doc["loc_z"] = AccZ;
+    
+    // Add IMU 2 data as extra fields
+    doc["rot_x2"] = gyroAngleX2;
+    doc["rot_y2"] = gyroAngleY2;
+    doc["rot_z2"] = gyroAngleZ2;
+    doc["loc_x2"] = AccX2;
+    doc["loc_y2"] = AccY2;
+    doc["loc_z2"] = AccZ2;
+    
+    doc["timestamp"] = millis();
+    
+    // Serialize JSON to string
+    String jsonString;
+    serializeJson(doc, jsonString);
+    
+    // Send JSON to WebSocket server
+    webSocket.sendTXT(jsonString);
+  }
+  
+  // Print data to Serial for debugging
+  Serial.print("IMU1: ");
+  Serial.print(AccX); Serial.print("/");
+  Serial.print(AccY); Serial.print("/");
+  Serial.print(AccZ); Serial.print(" | ");
+  Serial.print(gyroAngleX); Serial.print("/");
+  Serial.print(gyroAngleY); Serial.print("/");
+  Serial.print(gyroAngleZ);
+  
+  Serial.print(" | IMU2: ");
+  Serial.print(AccX2); Serial.print("/");
+  Serial.print(AccY2); Serial.print("/");
+  Serial.print(AccZ2); Serial.print(" | ");
+  Serial.print(gyroAngleX2); Serial.print("/");
+  Serial.print(gyroAngleY2); Serial.print("/");
+  Serial.println(gyroAngleZ2);
+  
+  delay(10);
+}
