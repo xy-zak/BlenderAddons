@@ -49,20 +49,66 @@ def process_imu_data(data):
             # Convert degrees to radians (multiply by pi/180)
             deg_to_rad = 3.14159265359 / 180.0
             
+            # Get rotation offsets in radians
+            offset_x = camera_settings.rotation_offset_x  # Already in radians because of subtype='ANGLE'
+            offset_y = camera_settings.rotation_offset_y  # Already in radians because of subtype='ANGLE'
+            offset_z = camera_settings.rotation_offset_z  # Already in radians because of subtype='ANGLE'
+            
             if is_hybrid:
                 # In hybrid setup, we set local rotation relative to parent
-                camera.rotation_euler.x = float(data["rot_x"]) * factor * deg_to_rad
-                camera.rotation_euler.y = float(data["rot_y"]) * factor * deg_to_rad
-                camera.rotation_euler.z = float(data["rot_z"]) * factor * deg_to_rad
+                # Apply rotations from IMU plus offsets
+                camera.rotation_euler.x = float(data["rot_x"]) * factor * deg_to_rad + offset_x
+                camera.rotation_euler.y = float(data["rot_y"]) * factor * deg_to_rad + offset_y
+                camera.rotation_euler.z = float(data["rot_z"]) * factor * deg_to_rad + offset_z
             else:
                 # Regular setup, set world rotation
-                camera.rotation_euler.x = float(data["rot_x"]) * factor * deg_to_rad
-                camera.rotation_euler.y = float(data["rot_y"]) * factor * deg_to_rad
-                camera.rotation_euler.z = float(data["rot_z"]) * factor * deg_to_rad
+                camera.rotation_euler.x = float(data["rot_x"]) * factor * deg_to_rad + offset_x
+                camera.rotation_euler.y = float(data["rot_y"]) * factor * deg_to_rad + offset_y
+                camera.rotation_euler.z = float(data["rot_z"]) * factor * deg_to_rad + offset_z
             
             print(f"WebSocket Test: Updated camera rotation: {camera.rotation_euler}")
         except Exception as e:
             print(f"WebSocket Test: Error updating camera rotation: {str(e)}")
+    
+    # Update location if enabled
+    if camera_settings.track_location and "loc_x" in data and "loc_y" in data and "loc_z" in data:
+        try:
+            factor = camera_settings.location_factor
+            
+            if is_hybrid:
+                # In hybrid setup, we set local location relative to parent
+                camera.location.x = float(data["loc_x"]) * factor
+                camera.location.y = float(data["loc_y"]) * factor
+                camera.location.z = float(data["loc_z"]) * factor
+            else:
+                # Regular setup, set world location
+                camera.location.x = float(data["loc_x"]) * factor
+                camera.location.y = float(data["loc_y"]) * factor
+                camera.location.z = float(data["loc_z"]) * factor
+            
+            print(f"WebSocket Test: Updated camera location: {camera.location}")
+        except Exception as e:
+            print(f"WebSocket Test: Error updating camera location: {str(e)}")
+    
+    # Update location if enabled
+    if camera_settings.track_location and "loc_x" in data and "loc_y" in data and "loc_z" in data:
+        try:
+            factor = camera_settings.location_factor
+            
+            if is_hybrid:
+                # In hybrid setup, we set local location relative to parent
+                camera.location.x = float(data["loc_x"]) * factor
+                camera.location.y = float(data["loc_y"]) * factor
+                camera.location.z = float(data["loc_z"]) * factor
+            else:
+                # Regular setup, set world location
+                camera.location.x = float(data["loc_x"]) * factor
+                camera.location.y = float(data["loc_y"]) * factor
+                camera.location.z = float(data["loc_z"]) * factor
+            
+            print(f"WebSocket Test: Updated camera location: {camera.location}")
+        except Exception as e:
+            print(f"WebSocket Test: Error updating camera location: {str(e)}")
     
     # Update location if enabled
     if camera_settings.track_location and "loc_x" in data and "loc_y" in data and "loc_z" in data:

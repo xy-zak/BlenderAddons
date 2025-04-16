@@ -13,7 +13,6 @@ class WS_PT_MainPanel(Panel):
     def draw(self, context):
         layout = self.layout
         server_settings = context.scene.server_settings
-        debug_settings = context.scene.debug_settings
         camera_tracking = context.scene.camera_tracking
         
         # Server controls
@@ -74,26 +73,25 @@ class WS_PT_MainPanel(Panel):
                 
                 # Empty transform
                 transform_box = box.box()
-                transform_box.label(text="Origin Transform:")
+                transform_box.label(text="Origin Location:")
                 
-                # Location
+                # Location only
                 col = transform_box.column(align=True)
-                col.label(text="Location:")
                 row = col.row(align=True)
                 row.prop(camera_tracking, "empty_loc_x", text="X")
                 row.prop(camera_tracking, "empty_loc_y", text="Y")
                 row.prop(camera_tracking, "empty_loc_z", text="Z")
-                
-                # Rotation
-                col = transform_box.column(align=True)
-                col.label(text="Rotation:")
-                row = col.row(align=True)
-                row.prop(camera_tracking, "empty_rot_x", text="X")
-                row.prop(camera_tracking, "empty_rot_y", text="Y")
-                row.prop(camera_tracking, "empty_rot_z", text="Z")
-                
-                # Update button
-                transform_box.operator("ws.update_empty_transform", icon='TRANSFORM')
+            
+            # Rotation offset (new section)
+            offset_box = box.box()
+            offset_box.label(text="Rotation Offset (degrees):")
+            
+            # Rotation offset properties
+            col = offset_box.column(align=True)
+            row = col.row(align=True)
+            row.prop(camera_tracking, "rotation_offset_x", text="X")
+            row.prop(camera_tracking, "rotation_offset_y", text="Y")
+            row.prop(camera_tracking, "rotation_offset_z", text="Z")
             
             # Tracking settings
             tracking_box = box.box()
@@ -110,10 +108,46 @@ class WS_PT_MainPanel(Panel):
                 col.prop(camera_tracking, "rotation_factor")
             if camera_tracking.track_location:
                 col.prop(camera_tracking, "location_factor")
+
+# Debug panel
+class WS_PT_DebugPanel(Panel):
+    bl_label = "Debug"
+    bl_idname = "WS_PT_DebugPanel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WebSocket'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw(self, context):
+        layout = self.layout
+        debug_settings = context.scene.debug_settings
+        camera_tracking = context.scene.camera_tracking
+        
+        # Simulation section
+        box = layout.box()
+        box.label(text="Simulation Mode:")
+        
+        row = box.row()
+        row.prop(debug_settings, "debug_mode", text="Enable Simulation")
+        
+        if debug_settings.debug_mode:
+            row = box.row()
+            row.prop(debug_settings, "require_hybrid", text="Require Hybrid Setup")
+            
+            row = box.row(align=True)
+            if debug_settings.debug_simulation_active:
+                row.operator("ws.stop_debug_simulation", icon='PAUSE')
+                row.label(text="Simulation Running", icon='PLAY')
+            else:
+                row.operator("ws.start_debug_simulation", icon='PLAY')
+                
+            # Single Frame IMU Data
+            if not debug_settings.debug_simulation_active:
+                box.operator("ws.send_debug_frame", icon='CAMERA_DATA')
         
         # Debug info
         box = layout.box()
-        box.prop(debug_settings, "show_debug")
+        box.prop(debug_settings, "show_debug", text="Show Debug Info")
         
         if debug_settings.show_debug:
             # Show connection status
@@ -130,24 +164,113 @@ class WS_PT_MainPanel(Panel):
                 box.label(text="Recent Messages:")
                 for line in debug_settings.message_log.split("\n"):
                     box.label(text=line)
-        
-        # ESP32 info
-        help_box = layout.box()
-        help_box.label(text="ESP32 IMU Message Format:")
-        help_box.label(text="{")
-        help_box.label(text='  "type": "IMU",')
-        help_box.label(text='  "rot_x": 0.0,')
-        help_box.label(text='  "rot_y": 0.0,')
-        help_box.label(text='  "rot_z": 0.0,')
-        help_box.label(text='  "loc_x": 0.0,')
-        help_box.label(text='  "loc_y": 0.0,')
-        help_box.label(text='  "loc_z": 0.0,')
-        help_box.label(text='  "timestamp": 1234567890')
-        help_box.label(text="}")
+
+# Message formats panel
+class WS_PT_MessageFormatsPanel(Panel):
+    bl_label = "JSON Message Formats"
+    bl_idname = "WS_PT_MessageFormatsPanel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WebSocket'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Available Message Types:")
+
+# IMU sub-panel
+class WS_PT_IMUMessagePanel(Panel):
+    bl_label = "IMU Rotation and Location"
+    bl_idname = "WS_PT_IMUMessagePanel"
+    bl_parent_id = "WS_PT_MessageFormatsPanel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WebSocket'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="{")
+        box.label(text='  "type": "IMU",')
+        box.label(text='  "rot_x": 0.0,')
+        box.label(text='  "rot_y": 0.0,')
+        box.label(text='  "rot_z": 0.0,')
+        box.label(text='  "loc_x": 0.0,')
+        box.label(text='  "loc_y": 0.0,')
+        box.label(text='  "loc_z": 0.0,')
+        box.label(text='  "timestamp": 1234567890')
+        box.label(text="}")
+
+# Aperture/Zoom sub-panel
+class WS_PT_ApertureMessagePanel(Panel):
+    bl_label = "Aperture, Focal Distance and Zoom"
+    bl_idname = "WS_PT_ApertureMessagePanel"
+    bl_parent_id = "WS_PT_MessageFormatsPanel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WebSocket'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="{")
+        box.label(text='  "type": "CAMERA",')
+        box.label(text='  "aperture": 2.8,')
+        box.label(text='  "focal_length": 50.0,')
+        box.label(text='  "focus_distance": 3.0,')
+        box.label(text='  "timestamp": 1234567890')
+        box.label(text="}")
+
+# Exposure sub-panel
+class WS_PT_ExposureMessagePanel(Panel):
+    bl_label = "Exposure Dial"
+    bl_idname = "WS_PT_ExposureMessagePanel"
+    bl_parent_id = "WS_PT_MessageFormatsPanel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WebSocket'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="{")
+        box.label(text='  "type": "EXPOSURE",')
+        box.label(text='  "ev_adjust": 1.5,')
+        box.label(text='  "timestamp": 1234567890')
+        box.label(text="}")
+
+# Calibration sub-panel
+class WS_PT_CalibrationMessagePanel(Panel):
+    bl_label = "Calibration Trigger"
+    bl_idname = "WS_PT_CalibrationMessagePanel"
+    bl_parent_id = "WS_PT_MessageFormatsPanel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WebSocket'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="{")
+        box.label(text='  "type": "CALIBRATION",')
+        box.label(text='  "action": "start",')
+        box.label(text='  "target": "imu",')
+        box.label(text='  "timestamp": 1234567890')
+        box.label(text="}")
 
 # Register
 classes = (
     WS_PT_MainPanel,
+    WS_PT_DebugPanel,
+    WS_PT_MessageFormatsPanel,
+    WS_PT_IMUMessagePanel,
+    WS_PT_ApertureMessagePanel,
+    WS_PT_ExposureMessagePanel,
+    WS_PT_CalibrationMessagePanel,
 )
 
 def register():

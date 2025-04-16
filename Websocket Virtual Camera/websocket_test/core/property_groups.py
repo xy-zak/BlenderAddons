@@ -53,32 +53,25 @@ class DebugSettings(PropertyGroup):
         description="Log of recent messages",
         default=""
     )
-
-# Simple update callback for empty transform
-def update_empty_transform(self, context):
-    """Update the empty's transform when properties change"""
-    # This will only be called if the properties exist
-    if hasattr(self, 'target_empty') and self.target_empty:
-        try:
-            if self.target_empty in bpy.data.objects:
-                empty = bpy.data.objects[self.target_empty]
-                
-                # Update the empty's transform
-                if hasattr(self, 'empty_loc_x'):
-                    empty.location.x = self.empty_loc_x
-                if hasattr(self, 'empty_loc_y'):
-                    empty.location.y = self.empty_loc_y
-                if hasattr(self, 'empty_loc_z'):
-                    empty.location.z = self.empty_loc_z
-                if hasattr(self, 'empty_rot_x'):
-                    empty.rotation_euler.x = self.empty_rot_x
-                if hasattr(self, 'empty_rot_y'):
-                    empty.rotation_euler.y = self.empty_rot_y
-                if hasattr(self, 'empty_rot_z'):
-                    empty.rotation_euler.z = self.empty_rot_z
-        except:
-            # Silently fail - this prevents errors in the UI
-            pass
+    
+    # Debug simulation settings - renamed to simulation
+    debug_mode: BoolProperty(
+        name="Enable Simulation",
+        description="Enable simulation tools for testing without ESP32",
+        default=True
+    )
+    
+    debug_simulation_active: BoolProperty(
+        name="Simulation Active",
+        description="Indicates if simulation is running",
+        default=False
+    )
+    
+    require_hybrid: BoolProperty(
+        name="Require Hybrid Setup",
+        description="If enabled, simulation tools will only work with hybrid camera setup",
+        default=False
+    )
 
 # Camera tracking settings
 class CameraTrackingSettings(PropertyGroup):
@@ -122,59 +115,71 @@ class CameraTrackingSettings(PropertyGroup):
         max=10.0
     )
     
-    # Empty transform properties
+    # Empty location properties
     empty_loc_x: FloatProperty(
         name="X",
         description="X location of the empty parent",
         default=0.0,
-        update=update_empty_transform
+        update=lambda self, context: update_empty_location(self, context)
     )
     
     empty_loc_y: FloatProperty(
         name="Y",
         description="Y location of the empty parent",
         default=0.0,
-        update=update_empty_transform
+        update=lambda self, context: update_empty_location(self, context)
     )
     
     empty_loc_z: FloatProperty(
         name="Z",
         description="Z location of the empty parent",
         default=0.0,
-        update=update_empty_transform
+        update=lambda self, context: update_empty_location(self, context)
     )
     
-    empty_rot_x: FloatProperty(
-        name="X",
-        description="X rotation of the empty parent",
+    # Rotation offset properties (new)
+    rotation_offset_x: FloatProperty(
+        name="X Offset",
+        description="X rotation offset applied to camera (degrees)",
         default=0.0,
         subtype='ANGLE',
-        unit='ROTATION',
-        update=update_empty_transform
+        unit='ROTATION'
     )
     
-    empty_rot_y: FloatProperty(
-        name="Y",
-        description="Y rotation of the empty parent",
+    rotation_offset_y: FloatProperty(
+        name="Y Offset",
+        description="Y rotation offset applied to camera (degrees)",
         default=0.0,
         subtype='ANGLE',
-        unit='ROTATION',
-        update=update_empty_transform
+        unit='ROTATION'
     )
     
-    empty_rot_z: FloatProperty(
-        name="Z",
-        description="Z rotation of the empty parent",
+    rotation_offset_z: FloatProperty(
+        name="Z Offset",
+        description="Z rotation offset applied to camera (degrees)",
         default=0.0,
         subtype='ANGLE',
-        unit='ROTATION',
-        update=update_empty_transform
+        unit='ROTATION'
     )
     
     last_imu_data: StringProperty(
         name="Last IMU Data",
         default="{}"
     )
+
+# Function to update empty location when properties change
+def update_empty_location(self, context):
+    """Update the empty's location when properties change"""
+    if hasattr(self, 'target_empty') and self.target_empty:
+        try:
+            if self.target_empty in bpy.data.objects:
+                empty = bpy.data.objects[self.target_empty]
+                empty.location.x = self.empty_loc_x
+                empty.location.y = self.empty_loc_y
+                empty.location.z = self.empty_loc_z
+        except:
+            # Silently fail - this prevents errors in the UI
+            pass
 
 # Register all property groups
 def register():

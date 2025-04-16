@@ -1,10 +1,19 @@
 import bpy
 from bpy.types import Operator
+import json
+import math
+import time
+from bpy.app import timers
 
 # Import WebSocket modules
 def get_websocket_module():
     from ..core import simple_websocket
     return simple_websocket
+
+# Global variables for simulation animation
+_simulation_running = False
+_animation_start_time = 0
+_animation_pattern = "circle"  # Default pattern
 
 # Operator to start WebSocket server
 class WS_OT_StartServer(Operator):
@@ -57,37 +66,6 @@ class WS_OT_SendTestMessage(Operator):
         else:
             self.report({'WARNING'}, "No clients connected")
             return {'CANCELLED'}
-
-# Operator to stop WebSocket server
-class WS_OT_StopServer(Operator):
-    bl_idname = "ws.stop_server"
-    bl_label = "Stop Server"
-    bl_description = "Stop the WebSocket server"
-    
-    def execute(self, context):
-        websocket = get_websocket_module()
-        if websocket.stop_server():
-            self.report({'INFO'}, "WebSocket server stopped")
-            return {'FINISHED'}
-        else:
-            self.report({'WARNING'}, "WebSocket server is not running")
-            return {'CANCELLED'}
-
-# Operator to send a test message
-class WS_OT_SendTestMessage(Operator):
-    bl_idname = "ws.send_test_message"
-    bl_label = "Send Test Message"
-    bl_description = "Send a test message to connected clients"
-    
-    def execute(self, context):
-        websocket = get_websocket_module()
-        if websocket.send_test_message():
-            self.report({'INFO'}, "Test message sent")
-            return {'FINISHED'}
-        else:
-            self.report({'WARNING'}, "No clients connected")
-            return {'CANCELLED'}
-        
 
 # Operator to select a camera with eyedropper
 class WS_OT_SetActiveCamera(Operator):
@@ -159,16 +137,16 @@ class WS_OT_SetupHybridCamera(Operator):
             # Link the empty to the scene
             context.collection.objects.link(empty)
             
-            # Copy camera's current transform to empty
+            # Copy camera's current location to empty, but use zero rotation
             empty.location = camera.location.copy()
-            empty.rotation_euler = camera.rotation_euler.copy()
+            empty.rotation_euler = (0, 0, 0)  # Start with zero rotation for empty
             
             # Set empty as camera's parent
             camera.parent = empty
             
             # Reset camera's local transform (it inherits global transform from parent)
             camera.location = (0, 0, 0)
-            camera.rotation_euler = (0, 0, 0)
+            camera.rotation_euler = (0, 0, 0)  # Make sure camera also has zero local rotation
             
             # Set as target empty
             camera_tracking.target_empty = empty.name
@@ -177,9 +155,11 @@ class WS_OT_SetupHybridCamera(Operator):
             camera_tracking.empty_loc_x = empty.location.x
             camera_tracking.empty_loc_y = empty.location.y
             camera_tracking.empty_loc_z = empty.location.z
-            camera_tracking.empty_rot_x = empty.rotation_euler.x
-            camera_tracking.empty_rot_y = empty.rotation_euler.y
-            camera_tracking.empty_rot_z = empty.rotation_euler.z
+            
+            # Initialize rotation offset properties to zeros
+            camera_tracking.rotation_offset_x = 0.0
+            camera_tracking.rotation_offset_y = 0.0
+            camera_tracking.rotation_offset_z = 0.0
             
             # Select the empty
             bpy.ops.object.select_all(action='DESELECT')
@@ -253,56 +233,283 @@ class WS_OT_ClearHybridCamera(Operator):
             
         return {'FINISHED'}
 
-# Operator to update empty transform from UI
-class WS_OT_UpdateEmptyTransform(Operator):
-    bl_idname = "ws.update_empty_transform"
-    bl_label = "Update Transform"
-    bl_description = "Update the empty transform from UI values"
+# Function to generate simulated IMU data
+def generate_imu_data(context, pattern="circle"):
+    camera_settings = context.scene.camera_tracking
+    
+    # Get elapsed time since start
+    elapsed = time.time() - _animation_start_time
+    
+    # Base values
+    rot_x = 0.0
+    rot_y = 0.0
+    rot_z = 0.0
+    loc_x = 0.0
+    loc_y = 0.0
+    loc_z = 0.0
+    
+    # Generate different patterns based on the selection
+    if pattern == "circle":
+        # Circular motion
+        angle = elapsed * 0.5  # slower rotation
+        rot_x = 15 * math.sin(angle)  # 15 degree tilt
+        rot_y = 15 * math.cos(angle)  # 15 degree tilt
+        rot_z = 5 * math.sin(angle * 2)  # slight roll
+        
+    elif pattern == "shake":
+        # Random shaking
+        from random import uniform
+        rot_x = uniform(-5, 5)
+        rot_y = uniform(-5, 5)
+        rot_z = uniform(-2, 2)
+        loc_x = uniform(-0.05, 0.05)
+        loc_y = uniform(-0.05, 0.05)
+        loc_z = uniform(-0.02, 0.02)
+        
+    elif pattern == "pan":
+        # Panning motion
+        rot_y = 45 * math.sin(elapsed * 0.3)  # 45 degree pan left/right
+        
+    elif pattern == "tilt":
+        # Tilting motion
+        rot_x = 30 * math.sin(elapsed * 0.3)  # 30 degree tilt up/down
+        
+    elif pattern == "roll":
+        # Rolling motion
+        rot_z = 20 * math.sin(elapsed * 0.3)  # 20 degree roll
+        
+    elif pattern == "sidestep":
+        # Side to side movement
+        loc_x = 0.3 * math.sin(elapsed * 1.0)
+        
+    # Create simulated IMU data
+    data = {
+        "type": "IMU",
+        "rot_x": rot_x,
+        "rot_y": rot_y,
+        "rot_z": rot_z,
+        "loc_x": loc_x,
+        "loc_y": loc_y,
+        "loc_z": loc_z,
+        "timestamp": int(time.time() * 1000)
+    }
+    
+    return data
+
+# Timer function to simulate IMU data
+def simulation_timer():
+    global _simulation_running, _animation_pattern
+    
+    if not _simulation_running:
+        return None  # Stop timer
+    
+    # Generate and process IMU data
+    websocket = get_websocket_module()
+    data = generate_imu_data(bpy.context, _animation_pattern)
+    
+    # Process the IMU data directly
+    websocket.process_imu_data(data)
+    
+    # Update debug info
+    bpy.context.scene.debug_settings.last_message = json.dumps(data)
+    
+    # Add to message history
+    if hasattr(websocket, "message_history"):
+        websocket.message_history.insert(0, json.dumps(data))
+        if len(websocket.message_history) > websocket.MAX_MESSAGE_HISTORY:
+            websocket.message_history.pop()
+        
+        # Update message log
+        log = "\n".join([f"[{i+1}] {msg[:100]}..." for i, msg in enumerate(websocket.message_history[:5])])
+        bpy.context.scene.debug_settings.message_log = log
+    
+    # Continue timer
+    return 0.05  # 20 fps simulation
+
+# Operator to start simulation
+class WS_OT_StartSimulation(Operator):
+    bl_idname = "ws.start_debug_simulation"
+    bl_label = "Start Simulation"
+    bl_description = "Start simulating IMU data for testing without ESP32"
+    
+    pattern: bpy.props.EnumProperty(
+        items=[
+            ("circle", "Circular Motion", "Simulate circular motion of the camera"),
+            ("shake", "Handheld Shake", "Simulate handheld camera shake"),
+            ("pan", "Panning", "Simulate panning left and right"),
+            ("tilt", "Tilting", "Simulate tilting up and down"),
+            ("roll", "Rolling", "Simulate rolling motion"),
+            ("sidestep", "Side Steps", "Simulate moving side to side")
+        ],
+        name="Pattern",
+        description="Select simulation pattern",
+        default="circle"
+    )
     
     @classmethod
     def poll(cls, context):
-        # Only show if we have a target empty
+        # Only enable if camera tracking is set up
         camera_settings = context.scene.camera_tracking
-        return camera_settings.target_empty != "" and camera_settings.target_empty in bpy.data.objects
+        return (camera_settings.target_camera != "" and 
+                (camera_settings.target_empty != "" or not context.scene.debug_settings.require_hybrid))
     
     def execute(self, context):
-        camera_settings = context.scene.camera_tracking
+        global _simulation_running, _animation_start_time, _animation_pattern
         
-        if camera_settings.target_empty:
-            try:
-                # Get empty object
-                empty = bpy.data.objects[camera_settings.target_empty]
-                
-                # Update location
-                empty.location.x = camera_settings.empty_loc_x
-                empty.location.y = camera_settings.empty_loc_y
-                empty.location.z = camera_settings.empty_loc_z
-                
-                # Update rotation
-                empty.rotation_euler.x = camera_settings.empty_rot_x
-                empty.rotation_euler.y = camera_settings.empty_rot_z
-                empty.rotation_euler.z = camera_settings.empty_rot_y
-                
-                self.report({'INFO'}, "Empty transform updated")
-                return {'FINISHED'}
-            except KeyError:
-                self.report({'ERROR'}, "Empty not found")
-                camera_settings.target_empty = ""
-                return {'CANCELLED'}
-        else:
-            self.report({'ERROR'}, "No target empty set")
-            return {'CANCELLED'}
+        # Set up simulation
+        _simulation_running = True
+        _animation_start_time = time.time()
+        _animation_pattern = self.pattern
+        
+        # Start timer
+        if not timers.is_registered(simulation_timer):
+            timers.register(simulation_timer)
+        
+        # Update UI
+        context.scene.debug_settings.debug_simulation_active = True
+        context.scene.debug_settings.connection_status = f"Simulation active: {self.pattern}"
+        
+        self.report({'INFO'}, f"Started simulation: {self.pattern}")
+        return {'FINISHED'}
+    
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self)
 
+# Operator to stop simulation
+class WS_OT_StopSimulation(Operator):
+    bl_idname = "ws.stop_debug_simulation"
+    bl_label = "Stop Simulation"
+    bl_description = "Stop simulating IMU data"
+    
+    @classmethod
+    def poll(cls, context):
+        # Only enable if simulation is running
+        return context.scene.debug_settings.debug_simulation_active
+    
+    def execute(self, context):
+        global _simulation_running
+        
+        # Stop simulation
+        _simulation_running = False
+        
+        # Update UI
+        context.scene.debug_settings.debug_simulation_active = False
+        context.scene.debug_settings.connection_status = "Simulation stopped"
+        
+        self.report({'INFO'}, "Stopped simulation")
+        return {'FINISHED'}
+
+# Operator to send a single frame of simulated data
+class WS_OT_SendSimulatedFrame(Operator):
+    bl_idname = "ws.send_debug_frame"
+    bl_label = "Send Single Frame"
+    bl_description = "Send a single frame of simulated IMU data"
+    
+    rot_x: bpy.props.FloatProperty(
+        name="Rotation X",
+        description="X rotation in degrees",
+        default=0.0,
+        min=-180.0,
+        max=180.0
+    )
+    
+    rot_y: bpy.props.FloatProperty(
+        name="Rotation Y",
+        description="Y rotation in degrees",
+        default=0.0,
+        min=-180.0,
+        max=180.0
+    )
+    
+    rot_z: bpy.props.FloatProperty(
+        name="Rotation Z",
+        description="Z rotation in degrees",
+        default=0.0,
+        min=-180.0,
+        max=180.0
+    )
+    
+    loc_x: bpy.props.FloatProperty(
+        name="Location X",
+        description="X location offset",
+        default=0.0,
+        min=-1.0,
+        max=1.0
+    )
+    
+    loc_y: bpy.props.FloatProperty(
+        name="Location Y",
+        description="Y location offset",
+        default=0.0,
+        min=-1.0,
+        max=1.0
+    )
+    
+    loc_z: bpy.props.FloatProperty(
+        name="Location Z",
+        description="Z location offset",
+        default=0.0,
+        min=-1.0,
+        max=1.0
+    )
+    
+    @classmethod
+    def poll(cls, context):
+        # Only enable if camera tracking is set up and simulation is not running
+        camera_settings = context.scene.camera_tracking
+        return (camera_settings.target_camera != "" and 
+                (camera_settings.target_empty != "" or not context.scene.debug_settings.require_hybrid) and
+                not context.scene.debug_settings.debug_simulation_active)
+    
+    def execute(self, context):
+        # Create IMU data
+        data = {
+            "type": "IMU",
+            "rot_x": self.rot_x,
+            "rot_y": self.rot_y,
+            "rot_z": self.rot_z,
+            "loc_x": self.loc_x,
+            "loc_y": self.loc_y,
+            "loc_z": self.loc_z,
+            "timestamp": int(time.time() * 1000)
+        }
+        
+        # Process IMU data
+        websocket = get_websocket_module()
+        websocket.process_imu_data(data)
+        
+        # Update debug info
+        bpy.context.scene.debug_settings.last_message = json.dumps(data)
+        
+        # Add to message history
+        if hasattr(websocket, "message_history"):
+            websocket.message_history.insert(0, json.dumps(data))
+            if len(websocket.message_history) > websocket.MAX_MESSAGE_HISTORY:
+                websocket.message_history.pop()
+            
+            # Update message log
+            log = "\n".join([f"[{i+1}] {msg[:100]}..." for i, msg in enumerate(websocket.message_history[:5])])
+            bpy.context.scene.debug_settings.message_log = log
+        
+        self.report({'INFO'}, "Sent simulated frame")
+        return {'FINISHED'}
+    
+    def invoke(self, context, event):
+        wm = context.window_manager
+        return wm.invoke_props_dialog(self)
 
 # Register all operators
 classes = (
-    WS_OT_SetActiveCamera,  # New operator for eyedropper functionality
+    WS_OT_SetActiveCamera,
     WS_OT_StartServer,
     WS_OT_StopServer,
     WS_OT_SendTestMessage,
     WS_OT_SetupHybridCamera,
     WS_OT_ClearHybridCamera,
-    WS_OT_UpdateEmptyTransform,
+    WS_OT_StartSimulation,
+    WS_OT_StopSimulation,
+    WS_OT_SendSimulatedFrame,
 )
 
 def register():
