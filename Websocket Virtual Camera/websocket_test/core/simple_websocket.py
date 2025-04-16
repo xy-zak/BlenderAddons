@@ -27,48 +27,99 @@ def process_imu_data(data):
     scene = bpy.context.scene
     camera_settings = scene.camera_tracking
     
-    # Check if a target camera is set
-    if not camera_settings.target_camera:
-        return
+    # Check if message contains a cam_id
+    cam_id = data.get("cam_id", "")
     
-    # Always use the camera for IMU data
-    try:
-        camera = bpy.data.objects[camera_settings.target_camera]
-    except KeyError:
-        print(f"WebSocket Test: Camera '{camera_settings.target_camera}' not found")
-        return
+    # Get the cameras to update (based on cam_id)
+    target_cameras = []
     
-    # Check if this is a hybrid setup with an empty parent
-    is_hybrid = camera_settings.target_empty and camera_settings.target_empty in bpy.data.objects
+    if cam_id:
+        # Find the specific camera with the matching ID
+        for cam in camera_settings.cameras:
+            if cam.cam_id == cam_id:
+                # Found matching camera
+                if cam.camera_name in bpy.data.objects:
+                    camera_obj = bpy.data.objects[cam.camera_name]
+                    target_cameras.append(camera_obj)
+                    break
+    else:
+        # No cam_id specified, update all cameras
+        for cam in camera_settings.cameras:
+            if cam.camera_name in bpy.data.objects:
+                camera_obj = bpy.data.objects[cam.camera_name]
+                target_cameras.append(camera_obj)
     
-    # Update rotation if enabled
-    if camera_settings.track_rotation and "rot_x" in data and "rot_y" in data and "rot_z" in data:
+    # Fall back to legacy field if no cameras found
+    if not target_cameras and camera_settings.target_camera:
         try:
-            factor = camera_settings.rotation_factor
-            
-            # Convert degrees to radians (multiply by pi/180)
-            deg_to_rad = 3.14159265359 / 180.0
-            
-            # Get rotation offsets in radians
-            offset_x = camera_settings.rotation_offset_x  # Already in radians because of subtype='ANGLE'
-            offset_y = camera_settings.rotation_offset_y  # Already in radians because of subtype='ANGLE'
-            offset_z = camera_settings.rotation_offset_z  # Already in radians because of subtype='ANGLE'
-            
-            if is_hybrid:
-                # In hybrid setup, we set local rotation relative to parent
+            camera = bpy.data.objects[camera_settings.target_camera]
+            target_cameras.append(camera)
+        except KeyError:
+            print(f"WebSocket Test: Camera '{camera_settings.target_camera}' not found")
+            return
+    
+    # If still no cameras, exit
+    if not target_cameras:
+        print("WebSocket Test: No target cameras found")
+        return
+    
+    # Process each camera
+    for camera in target_cameras:
+        # Update rotation if enabled
+        if camera_settings.track_rotation and "rot_x" in data and "rot_y" in data and "rot_z" in data:
+            try:
+                factor = camera_settings.rotation_factor
+                
+                # Convert degrees to radians (multiply by pi/180)
+                deg_to_rad = 3.14159265359 / 180.0
+                
+                # Get rotation offsets in radians
+                offset_x = camera_settings.rotation_offset_x  # Already in radians because of subtype='ANGLE'
+                offset_y = camera_settings.rotation_offset_y  # Already in radians because of subtype='ANGLE'
+                offset_z = camera_settings.rotation_offset_z  # Already in radians because of subtype='ANGLE'
+                
                 # Apply rotations from IMU plus offsets
                 camera.rotation_euler.x = float(data["rot_x"]) * factor * deg_to_rad + offset_x
                 camera.rotation_euler.y = float(data["rot_y"]) * factor * deg_to_rad + offset_y
                 camera.rotation_euler.z = float(data["rot_z"]) * factor * deg_to_rad + offset_z
-            else:
-                # Regular setup, set world rotation
-                camera.rotation_euler.x = float(data["rot_x"]) * factor * deg_to_rad + offset_x
-                camera.rotation_euler.y = float(data["rot_y"]) * factor * deg_to_rad + offset_y
-                camera.rotation_euler.z = float(data["rot_z"]) * factor * deg_to_rad + offset_z
-            
-            print(f"WebSocket Test: Updated camera rotation: {camera.rotation_euler}")
-        except Exception as e:
-            print(f"WebSocket Test: Error updating camera rotation: {str(e)}")
+                
+                print(f"WebSocket Test: Updated camera '{camera.name}' rotation: {camera.rotation_euler}")
+            except Exception as e:
+                print(f"WebSocket Test: Error updating camera rotation: {str(e)}")
+        
+        # Update location if enabled
+        if camera_settings.track_location and "loc_x" in data and "loc_y" in data and "loc_z" in data:
+            try:
+                factor = camera_settings.location_factor
+                
+                # Always use local location since we have a parent
+                camera.location.x = float(data["loc_x"]) * factor
+                camera.location.y = float(data["loc_y"]) * factor
+                camera.location.z = float(data["loc_z"]) * factor
+                
+                print(f"WebSocket Test: Updated camera '{camera.name}' location: {camera.location}")
+            except Exception as e:
+                print(f"WebSocket Test: Error updating camera location: {str(e)}")
+        
+        # Update location if enabled
+        if camera_settings.track_location and "loc_x" in data and "loc_y" in data and "loc_z" in data:
+            try:
+                factor = camera_settings.location_factor
+                
+                if is_hybrid:
+                    # In hybrid setup, we set local location relative to parent
+                    camera.location.x = float(data["loc_x"]) * factor
+                    camera.location.y = float(data["loc_y"]) * factor
+                    camera.location.z = float(data["loc_z"]) * factor
+                else:
+                    # Regular setup, set world location
+                    camera.location.x = float(data["loc_x"]) * factor
+                    camera.location.y = float(data["loc_y"]) * factor
+                    camera.location.z = float(data["loc_z"]) * factor
+                
+                print(f"WebSocket Test: Updated camera '{camera.name}' location: {camera.location}")
+            except Exception as e:
+                print(f"WebSocket Test: Error updating camera location: {str(e)}")
     
     # Update location if enabled
     if camera_settings.track_location and "loc_x" in data and "loc_y" in data and "loc_z" in data:

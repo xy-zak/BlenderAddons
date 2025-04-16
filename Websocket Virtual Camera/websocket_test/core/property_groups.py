@@ -1,5 +1,5 @@
 import bpy
-from bpy.props import StringProperty, IntProperty, BoolProperty, FloatProperty
+from bpy.props import StringProperty, IntProperty, BoolProperty, FloatProperty, CollectionProperty, PointerProperty
 from bpy.types import PropertyGroup
 
 # Server settings
@@ -72,21 +72,104 @@ class DebugSettings(PropertyGroup):
         description="If enabled, simulation tools will only work with hybrid camera setup",
         default=False
     )
+    
+    # Added for multi-camera simulation
+    target_cam_id: StringProperty(
+        name="Target Camera ID",
+        description="Camera ID to send simulated data to (leave empty for all cameras)",
+        default=""
+    )
+
+# Single camera association for collection
+class CameraAssociation(PropertyGroup):
+    cam_id: StringProperty(
+        name="Camera ID",
+        description="Unique identifier for this camera received from ESP32",
+        default="",
+        # Add update function to rename camera object when cam_id changes
+        update=lambda self, context: rename_camera_object(self, context)
+    )
+    
+    camera_name: StringProperty(
+        name="Camera Object",
+        description="Blender camera object name",
+        default=""
+    )
+    
+    is_setup: BoolProperty(
+        name="Is Hybrid Setup",
+        description="Whether this camera is set up as a hybrid camera",
+        default=False
+    )
+    
+    empty_name: StringProperty(
+        name="Origin Empty",
+        description="Empty parent object name",
+        default=""
+    )
+
+# Function to update empty location when properties change
+def update_empty_location(self, context):
+    """Update the shared origin empty's location when properties change"""
+    camera_tracking = context.scene.camera_tracking
+    
+    # Update the shared origin empty if it exists
+    if camera_tracking.shared_origin_name and camera_tracking.shared_origin_name in bpy.data.objects:
+        try:
+            empty = bpy.data.objects[camera_tracking.shared_origin_name]
+            empty.location.x = camera_tracking.empty_loc_x
+            empty.location.y = camera_tracking.empty_loc_y
+            empty.location.z = camera_tracking.empty_loc_z
+        except:
+            # Silently fail - this prevents errors in the UI
+            pass
+
+def rename_camera_object(self, context):
+    """Rename the camera object when cam_id changes"""
+    # Only do this if we have a camera object
+    if self.camera_name and self.camera_name in bpy.data.objects:
+        camera_obj = bpy.data.objects[self.camera_name]
+        
+        # Rename only if not empty and different from current name
+        if self.cam_id and camera_obj.name != self.cam_id:
+            camera_obj.name = self.cam_id
+            # Update the reference in case Blender changes the name (adds .001, etc.)
+            self.camera_name = camera_obj.name
 
 # Camera tracking settings
 class CameraTrackingSettings(PropertyGroup):
+    # Shared origin empty for all cameras
+    shared_origin_name: StringProperty(
+        name="Shared Origin",
+        description="Name of the shared origin empty for all hybrid cameras",
+        default=""
+    )
+    
+    # Collection of cameras
+    cameras: CollectionProperty(
+        type=CameraAssociation,
+        name="Camera Associations"
+    )
+    
+    active_camera_index: IntProperty(
+        name="Active Camera Index",
+        default=0
+    )
+    
+    # Legacy fields kept for compatibility 
     target_camera: StringProperty(
         name="Target Camera",
-        description="Camera to control with IMU data",
+        description="Camera to control with IMU data (legacy field)",
         default=""
     )
     
     target_empty: StringProperty(
         name="Target Empty",
-        description="Empty parent of the target camera",
+        description="Empty parent of the target camera (legacy field)",
         default=""
     )
     
+    # Global tracking settings (shared across all cameras)
     track_rotation: BoolProperty(
         name="Track Rotation",
         description="Apply rotation data from IMU to the camera",
@@ -115,7 +198,7 @@ class CameraTrackingSettings(PropertyGroup):
         max=10.0
     )
     
-    # Empty location properties
+    # Empty location properties (shared across all cameras)
     empty_loc_x: FloatProperty(
         name="X",
         description="X location of the empty parent",
@@ -137,7 +220,7 @@ class CameraTrackingSettings(PropertyGroup):
         update=lambda self, context: update_empty_location(self, context)
     )
     
-    # Rotation offset properties (new)
+    # Rotation offset properties (shared across all cameras)
     rotation_offset_x: FloatProperty(
         name="X Offset",
         description="X rotation offset applied to camera (degrees)",
@@ -167,22 +250,9 @@ class CameraTrackingSettings(PropertyGroup):
         default="{}"
     )
 
-# Function to update empty location when properties change
-def update_empty_location(self, context):
-    """Update the empty's location when properties change"""
-    if hasattr(self, 'target_empty') and self.target_empty:
-        try:
-            if self.target_empty in bpy.data.objects:
-                empty = bpy.data.objects[self.target_empty]
-                empty.location.x = self.empty_loc_x
-                empty.location.y = self.empty_loc_y
-                empty.location.z = self.empty_loc_z
-        except:
-            # Silently fail - this prevents errors in the UI
-            pass
-
 # Register all property groups
 def register():
+    bpy.utils.register_class(CameraAssociation)
     bpy.utils.register_class(ServerSettings)
     bpy.utils.register_class(DebugSettings)
     bpy.utils.register_class(CameraTrackingSettings)
@@ -200,3 +270,4 @@ def unregister():
     bpy.utils.unregister_class(CameraTrackingSettings)
     bpy.utils.unregister_class(DebugSettings)
     bpy.utils.unregister_class(ServerSettings)
+    bpy.utils.unregister_class(CameraAssociation)

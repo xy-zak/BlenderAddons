@@ -49,41 +49,137 @@ class WS_PT_MainPanel(Panel):
             row = box.row()
             row.operator("ws.send_test_message", icon='EXPORT')
         
-        # Camera tracking settings
+        # Hybrid camera controls
         box = layout.box()
         box.label(text="Hybrid Camera Setup:")
-
-        # Add camera selection button
-        row = box.row()
-        row.prop(camera_tracking, "target_camera", text="Camera")
-        row.operator("ws.set_active_camera", text="", icon='EYEDROPPER')
         
-        # Camera selection buttons
-        row = box.row(align=True)
-        # Added these two lines for the buttons
-        row.operator("ws.setup_hybrid_camera", icon='CAMERA_DATA')
-        row.operator("ws.clear_hybrid_camera", icon='X')
+        # Check if shared origin exists
+        has_origin = camera_tracking.shared_origin_name and camera_tracking.shared_origin_name in bpy.data.objects
         
-        # Show target camera info if set
-        if camera_tracking.target_camera:
-            box.label(text=f"Target Camera: {camera_tracking.target_camera}")
+        # Create shared origin button or show its name
+        if not has_origin:
+            row = box.row()
+            row.operator("ws.create_shared_origin", icon='EMPTY_AXIS')
+        else:
+            row = box.row()
+            row.label(text=f"Origin: {camera_tracking.shared_origin_name}")
             
-            if camera_tracking.target_empty:
-                box.label(text=f"Origin Empty: {camera_tracking.target_empty}")
-                
-                # Empty transform
-                transform_box = box.box()
-                transform_box.label(text="Origin Location:")
-                
-                # Location only
-                col = transform_box.column(align=True)
-                row = col.row(align=True)
-                row.prop(camera_tracking, "empty_loc_x", text="X")
-                row.prop(camera_tracking, "empty_loc_y", text="Y")
-                row.prop(camera_tracking, "empty_loc_z", text="Z")
+            # Origin Location when it exists
+            transform_box = box.box()
+            transform_box.label(text="Origin Location:")
             
-            # Rotation offset (new section)
-            offset_box = box.box()
+            # Location controls
+            col = transform_box.column(align=True)
+            row = col.row(align=True)
+            row.prop(camera_tracking, "empty_loc_x", text="X")
+            row.prop(camera_tracking, "empty_loc_y", text="Y")
+            row.prop(camera_tracking, "empty_loc_z", text="Z")
+            
+            # Add Hybrid Camera button
+            row = box.row()
+            row.operator("ws.spawn_hybrid_camera", icon='CAMERA_DATA')
+            
+            # Rename Cameras button
+            if len(camera_tracking.cameras) > 0:
+                row = box.row()
+                row.operator("ws.rename_hybrid_cameras", icon='GREASEPENCIL')
+            
+            # Camera list with expandable details
+            if len(camera_tracking.cameras) > 0:
+                camera_box = box.box()
+                camera_box.label(text="Hybrid Cameras:")
+                
+                for i, cam in enumerate(camera_tracking.cameras):
+                    # Get the camera object if it exists
+                    camera_obj = None
+                    if cam.camera_name and cam.camera_name in bpy.data.objects:
+                        camera_obj = bpy.data.objects[cam.camera_name]
+                    
+                    # Camera entry
+                    row = camera_box.row(align=True)
+                    
+                    # Camera ID and expandable UI
+                    cam_prop = f"camera_{i}_expanded"
+                    if not hasattr(bpy.types.Scene, cam_prop):
+                        setattr(bpy.types.Scene, cam_prop, bpy.props.BoolProperty(default=False))
+                    
+                    expanded = getattr(context.scene, cam_prop, False)
+                    icon = 'TRIA_DOWN' if expanded else 'TRIA_RIGHT'
+                    
+                    # Click to expand/collapse
+                    op = row.operator(
+                        "wm.context_toggle", 
+                        text="", 
+                        icon=icon
+                    )
+                    op.data_path = f"scene.{cam_prop}"
+                    
+                    # Camera ID
+                    row.label(text=cam.cam_id, icon='OUTLINER_DATA_CAMERA')
+                    
+                    # Remove button
+                    op = row.operator("ws.remove_camera_association", text="", icon='TRASH')
+                    op.index = i
+                    
+                    # If expanded, show details
+                    if expanded and camera_obj:
+                        details_box = camera_box.box()
+                        
+                        # Location
+                        loc_row = details_box.row()
+                        loc_row.label(text="Location:")
+                        loc_col = details_box.column(align=True)
+                        loc_col.label(text=f"X: {camera_obj.location.x:.3f}")
+                        loc_col.label(text=f"Y: {camera_obj.location.y:.3f}")
+                        loc_col.label(text=f"Z: {camera_obj.location.z:.3f}")
+                        
+                        # Rotation
+                        rot_row = details_box.row()
+                        rot_row.label(text="Rotation (degrees):")
+                        rot_col = details_box.column(align=True)
+                        rot_col.label(text=f"X: {camera_obj.rotation_euler.x * 57.2958:.1f}°")
+                        rot_col.label(text=f"Y: {camera_obj.rotation_euler.y * 57.2958:.1f}°")
+                        rot_col.label(text=f"Z: {camera_obj.rotation_euler.z * 57.2958:.1f}°")
+                        
+                        # Camera specific properties
+                        if camera_obj.data:
+                            cam_row = details_box.row()
+                            cam_row.label(text="Camera Properties:")
+                            cam_col = details_box.column(align=True)
+                            cam_col.label(text=f"Focal Length: {camera_obj.data.lens:.1f}mm")
+                            cam_col.label(text=f"Aperture: {camera_obj.data.dof.aperture_fstop:.1f}")
+                            
+                            # Focus distance
+                            if hasattr(camera_obj.data.dof, "focus_distance"):
+                                focus_dist = camera_obj.data.dof.focus_distance
+                                cam_col.label(text=f"Focus Distance: {focus_dist:.2f}m")
+                            
+                            # Include time since last calibration
+                            last_time = context.scene.camera_tracking.last_imu_data
+                            if last_time and last_time != "{}":
+                                import json
+                                import time
+                                try:
+                                    data = json.loads(last_time)
+                                    if "timestamp" in data:
+                                        timestamp = data.get("timestamp", 0) / 1000  # Convert ms to seconds
+                                        seconds_elapsed = int(time.time() - timestamp)
+                                        minutes = seconds_elapsed // 60
+                                        seconds = seconds_elapsed % 60
+                                        calibration_text = f"{minutes:02d}:{seconds:02d}"
+                                        details_box.label(text=f"Time Since Calibration: {calibration_text}")
+                                except:
+                                    pass
+            else:
+                box.label(text="No cameras added. Click 'Spawn Hybrid Camera' to add one.")
+        
+        # Global Rotation Offset and Tracking settings
+        if len(camera_tracking.cameras) > 0 or has_origin:
+            settings_box = layout.box()
+            settings_box.label(text="Camera Tracking Settings:")
+            
+            # Rotation offset (always show)
+            offset_box = settings_box.box()
             offset_box.label(text="Rotation Offset (degrees):")
             
             # Rotation offset properties
@@ -94,7 +190,7 @@ class WS_PT_MainPanel(Panel):
             row.prop(camera_tracking, "rotation_offset_z", text="Z")
             
             # Tracking settings
-            tracking_box = box.box()
+            tracking_box = settings_box.box()
             tracking_box.label(text="IMU Tracking Settings:")
             
             # Enable/disable tracking
@@ -133,6 +229,11 @@ class WS_PT_DebugPanel(Panel):
         if debug_settings.debug_mode:
             row = box.row()
             row.prop(debug_settings, "require_hybrid", text="Require Hybrid Setup")
+            
+            # Target camera ID for simulation
+            row = box.row()
+            row.label(text="Target Camera ID:")
+            row.prop(debug_settings, "target_cam_id", text="")
             
             row = box.row(align=True)
             if debug_settings.debug_simulation_active:
@@ -193,6 +294,7 @@ class WS_PT_IMUMessagePanel(Panel):
         box = layout.box()
         box.label(text="{")
         box.label(text='  "type": "IMU",')
+        box.label(text='  "cam_id": "cam1",')  # Added cam_id field
         box.label(text='  "rot_x": 0.0,')
         box.label(text='  "rot_y": 0.0,')
         box.label(text='  "rot_z": 0.0,')
@@ -217,6 +319,7 @@ class WS_PT_ApertureMessagePanel(Panel):
         box = layout.box()
         box.label(text="{")
         box.label(text='  "type": "CAMERA",')
+        box.label(text='  "cam_id": "cam1",')  # Added cam_id field
         box.label(text='  "aperture": 2.8,')
         box.label(text='  "focal_length": 50.0,')
         box.label(text='  "focus_distance": 3.0,')
@@ -238,6 +341,7 @@ class WS_PT_ExposureMessagePanel(Panel):
         box = layout.box()
         box.label(text="{")
         box.label(text='  "type": "EXPOSURE",')
+        box.label(text='  "cam_id": "cam1",')  # Added cam_id field
         box.label(text='  "ev_adjust": 1.5,')
         box.label(text='  "timestamp": 1234567890')
         box.label(text="}")
@@ -257,6 +361,7 @@ class WS_PT_CalibrationMessagePanel(Panel):
         box = layout.box()
         box.label(text="{")
         box.label(text='  "type": "CALIBRATION",')
+        box.label(text='  "cam_id": "cam1",')  # Added cam_id field
         box.label(text='  "action": "start",')
         box.label(text='  "target": "imu",')
         box.label(text='  "timestamp": 1234567890')
@@ -278,9 +383,21 @@ def register():
         bpy.utils.register_class(cls)
     # Add a property to track server state
     bpy.types.Scene.server_running = bpy.props.BoolProperty(default=False)
+    
+    # Register dynamic properties for camera expansion states
+    for i in range(10):  # Pre-register enough for typical use (10 cameras)
+        cam_prop = f"camera_{i}_expanded"
+        if not hasattr(bpy.types.Scene, cam_prop):
+            setattr(bpy.types.Scene, cam_prop, bpy.props.BoolProperty(default=False))
 
 def unregister():
+    # Clean up dynamic properties
+    for attr in dir(bpy.types.Scene):
+        if attr.startswith("camera_") and attr.endswith("_expanded"):
+            delattr(bpy.types.Scene, attr)
+            
     if hasattr(bpy.types.Scene, "server_running"):
         del bpy.types.Scene.server_running
+    
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
