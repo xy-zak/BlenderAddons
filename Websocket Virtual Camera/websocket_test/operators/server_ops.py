@@ -466,6 +466,11 @@ def generate_imu_data(context, pattern="circle"):
     # Get elapsed time since start
     elapsed = time.time() - _animation_start_time
     
+    # If we're recording, use a more exaggerated pattern to make changes more visible
+    if camera_settings.recording_active:
+        # Use more pronounced movement when recording
+        elapsed *= 1.5  # Speed up the animation
+    
     # Base values
     rot_x = 0.0
     rot_y = 0.0
@@ -482,6 +487,12 @@ def generate_imu_data(context, pattern="circle"):
         rot_y = 15 * math.cos(angle)  # 15 degree tilt
         rot_z = 5 * math.sin(angle * 2)  # slight roll
         
+        # Add subtle location changes when recording to show it works
+        if camera_settings.recording_active:
+            loc_x = 0.1 * math.sin(angle * 1.5)
+            loc_y = 0.1 * math.cos(angle * 1.5)
+            loc_z = 0.05 * math.sin(angle * 3)
+        
     elif pattern == "shake":
         # Random shaking
         from random import uniform
@@ -495,18 +506,30 @@ def generate_imu_data(context, pattern="circle"):
     elif pattern == "pan":
         # Panning motion
         rot_y = 45 * math.sin(elapsed * 0.3)  # 45 degree pan left/right
+        # Add subtle movement when recording
+        if camera_settings.recording_active:
+            loc_x = 0.1 * math.sin(elapsed * 0.5)
         
     elif pattern == "tilt":
         # Tilting motion
         rot_x = 30 * math.sin(elapsed * 0.3)  # 30 degree tilt up/down
+        # Add subtle movement when recording
+        if camera_settings.recording_active:
+            loc_z = 0.1 * math.sin(elapsed * 0.5)
         
     elif pattern == "roll":
         # Rolling motion
         rot_z = 20 * math.sin(elapsed * 0.3)  # 20 degree roll
+        # Add subtle movement when recording
+        if camera_settings.recording_active:
+            loc_y = 0.1 * math.sin(elapsed * 0.5)
         
     elif pattern == "sidestep":
         # Side to side movement
         loc_x = 0.3 * math.sin(elapsed * 1.0)
+        # Add rotation when recording
+        if camera_settings.recording_active:
+            rot_y = 10 * math.sin(elapsed * 0.8)
     
     elif pattern == "orbital":
         # Orbital camera - moves in a circle while rotating to look at center
@@ -545,6 +568,9 @@ def generate_imu_data(context, pattern="circle"):
     # Add camera ID if specified
     if debug_settings.target_cam_id:
         data["cam_id"] = debug_settings.target_cam_id
+    # If recording is active, make sure we target the recording camera
+    elif camera_settings.recording_active:
+        data["cam_id"] = camera_settings.recording_camera_id
     
     return data
 
@@ -552,10 +578,16 @@ def generate_imu_data(context, pattern="circle"):
 def simulation_timer():
     global _simulation_running, _animation_pattern
     
+    # Check if simulation should be running
     if not _simulation_running:
         return None  # Stop timer
     
-    # Generate and process IMU data
+    # Get scene
+    scene = bpy.context.scene
+    camera_tracking = scene.camera_tracking
+    debug_settings = scene.debug_settings
+    
+    # Generate IMU data
     websocket = get_websocket_module()
     data = generate_imu_data(bpy.context, _animation_pattern)
     
@@ -575,8 +607,18 @@ def simulation_timer():
         log = "\n".join([f"[{i+1}] {msg[:100]}..." for i, msg in enumerate(websocket.message_history[:5])])
         bpy.context.scene.debug_settings.message_log = log
     
-    # Continue timer
-    return 0.05  # 20 fps simulation
+    # If we're currently recording, make sure we call the frame handler explicitly
+    if camera_tracking.recording_active:
+        # Find the frame handler function
+        try:
+            from ..operators.render_ops import record_camera_handler
+            # Call it with the current scene
+            record_camera_handler(scene)
+        except ImportError:
+            print("WebSocket Test: Couldn't import record_camera_handler")
+    
+    # Continue timer at higher rate while recording to ensure smooth motion
+    return 0.03 if camera_tracking.recording_active else 0.05  # Faster updates while recording
 
 # Operator to start simulation
 class WS_OT_StartSimulation(Operator):

@@ -250,6 +250,48 @@ class CameraTrackingSettings(PropertyGroup):
         default="{}"
     )
 
+    recording_active: BoolProperty(
+        name="Recording Active",
+        description="Whether camera animation recording is active",
+        default=False
+    )
+    
+    recording_camera_id: StringProperty(
+        name="Recording Camera ID",
+        description="ID of the camera currently being recorded",
+        default=""
+    )
+    
+    recording_start_frame: IntProperty(
+        name="Recording Start Frame",
+        description="Frame where recording started",
+        default=1
+    )
+    
+    recording_end_frame: IntProperty(
+        name="Recording End Frame",
+        description="Frame where recording will automatically stop",
+        default=250
+    )
+    
+    record_aperture: BoolProperty(
+        name="Record Aperture",
+        description="Whether to record aperture changes",
+        default=True
+    )
+    
+    record_focal_length: BoolProperty(
+        name="Record Focal Length",
+        description="Whether to record focal length changes",
+        default=True
+    )
+    
+    record_focus_distance: BoolProperty(
+        name="Record Focus Distance",
+        description="Whether to record focus distance changes",
+        default=True
+    )
+
 # Register all property groups
 def register():
     bpy.utils.register_class(CameraAssociation)

@@ -154,6 +154,27 @@ class WS_PT_MainPanel(Panel):
                                 focus_dist = camera_obj.data.dof.focus_distance
                                 cam_col.label(text=f"Focus Distance: {focus_dist:.2f}m")
                             
+                            # Add buttons for direct rendering and recording
+                            btn_row = details_box.row(align=True)
+                            
+                            # Render button
+                            render_op = btn_row.operator("ws.render_from_camera", text="Render", icon='RENDER_STILL')
+                            render_op.cam_id = cam.cam_id
+                            
+                            # Don't show record button if already recording this camera
+                            is_recording_this = (camera_tracking.recording_active and 
+                                                camera_tracking.recording_camera_id == cam.cam_id)
+                                                
+                            if is_recording_this:
+                                btn_row.operator("ws.stop_camera_recording", text="Stop Recording", icon='PAUSE')
+                            else:
+                                # Don't enable if another camera is recording
+                                record_op = btn_row.operator("ws.start_camera_recording", 
+                                                           text="Record", 
+                                                           icon='REC',
+                                                           enabled=not camera_tracking.recording_active)
+                                record_op.cam_id = cam.cam_id
+                            
                             # Include time since last calibration
                             last_time = context.scene.camera_tracking.last_imu_data
                             if last_time and last_time != "{}":
@@ -204,6 +225,35 @@ class WS_PT_MainPanel(Panel):
                 col.prop(camera_tracking, "rotation_factor")
             if camera_tracking.track_location:
                 col.prop(camera_tracking, "location_factor")
+                
+            # Recording settings
+            if len(camera_tracking.cameras) > 0:
+                record_box = settings_box.box()
+                record_box.label(text="Camera Recording Settings:")
+                
+                # Recording status
+                if camera_tracking.recording_active:
+                    status_row = record_box.row()
+                    status_row.alert = True
+                    status_row.label(text=f"Recording Active: {camera_tracking.recording_camera_id}", icon='REC')
+                    
+                    # Stop button
+                    status_row.operator("ws.stop_camera_recording", text="Stop", icon='PAUSE')
+                    
+                    # Show recording frame range
+                    frame_row = record_box.row()
+                    frame_row.label(text=f"Recording frames: {camera_tracking.recording_start_frame} to {camera_tracking.recording_end_frame}")
+                else:
+                    # Recording options
+                    row = record_box.row()
+                    row.prop(camera_tracking, "recording_end_frame", text="End Frame")
+                    
+                    # Recording properties to include
+                    props_row = record_box.row(align=True)
+                    props_row.label(text="Record:")
+                    props_row.prop(camera_tracking, "record_aperture", text="Aperture", toggle=True)
+                    props_row.prop(camera_tracking, "record_focal_length", text="Zoom", toggle=True)
+                    props_row.prop(camera_tracking, "record_focus_distance", text="Focus", toggle=True)
 
 # Debug panel
 class WS_PT_DebugPanel(Panel):
@@ -245,6 +295,25 @@ class WS_PT_DebugPanel(Panel):
             # Single Frame IMU Data
             if not debug_settings.debug_simulation_active:
                 box.operator("ws.send_debug_frame", icon='CAMERA_DATA')
+                
+            # Add additional simulation options
+            sim_box = box.box()
+            sim_box.label(text="Message Simulation:")
+            
+            col = sim_box.column()
+            
+            # Render message simulation
+            render_row = col.row(align=True)
+            op = render_row.operator("ws.simulate_render_request", icon='RENDER_STILL')
+            
+            # Record message simulation
+            record_row = col.row(align=True)
+            
+            # Show appropriate button based on recording state
+            if context.scene.camera_tracking.recording_active:
+                record_row.operator("ws.simulate_record_stop", icon='PAUSE')
+            else:
+                record_row.operator("ws.simulate_record_start", icon='REC')
         
         # Debug info
         box = layout.box()
@@ -367,6 +436,46 @@ class WS_PT_CalibrationMessagePanel(Panel):
         box.label(text='  "timestamp": 1234567890')
         box.label(text="}")
 
+# Render trigger sub-panel
+class WS_PT_RenderMessagePanel(Panel):
+    bl_label = "Render Trigger"
+    bl_idname = "WS_PT_RenderMessagePanel"
+    bl_parent_id = "WS_PT_MessageFormatsPanel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WebSocket'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="{")
+        box.label(text='  "type": "RENDER",')
+        box.label(text='  "cam_id": "cam1",')
+        box.label(text='  "action": "trigger",')
+        box.label(text='  "timestamp": 1234567890')
+        box.label(text="}")
+
+# Recording sub-panel
+class WS_PT_RecordMessagePanel(Panel):
+    bl_label = "Recording Control"
+    bl_idname = "WS_PT_RecordMessagePanel"
+    bl_parent_id = "WS_PT_MessageFormatsPanel"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = 'WebSocket'
+    bl_options = {'DEFAULT_CLOSED'}
+    
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(text="{")
+        box.label(text='  "type": "RECORD",')
+        box.label(text='  "cam_id": "cam1",')
+        box.label(text='  "action": "start",  // or "stop"')
+        box.label(text='  "timestamp": 1234567890')
+        box.label(text="}")
+
 # Register
 classes = (
     WS_PT_MainPanel,
@@ -376,6 +485,8 @@ classes = (
     WS_PT_ApertureMessagePanel,
     WS_PT_ExposureMessagePanel,
     WS_PT_CalibrationMessagePanel,
+    WS_PT_RenderMessagePanel,
+    WS_PT_RecordMessagePanel,
 )
 
 def register():

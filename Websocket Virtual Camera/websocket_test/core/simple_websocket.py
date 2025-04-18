@@ -181,6 +181,73 @@ def process_imu_data(data):
         except Exception as e:
             print(f"WebSocket Test: Error updating camera location: {str(e)}")
 
+def process_render_request(data):
+    """Process render request from a specific camera"""
+    import bpy
+    from bpy.app import timers
+    
+    cam_id = data.get("cam_id", "")
+    
+    if not cam_id:
+        print("WebSocket Test: Missing camera ID in render request")
+        return
+    
+    def trigger_render():
+        try:
+            # Use the operator to trigger render
+            bpy.ops.ws.render_from_camera(cam_id=cam_id)
+            return None
+        except Exception as e:
+            print(f"WebSocket Test: Error triggering render: {str(e)}")
+            return None
+    
+    # Schedule the render operation
+    timers.register(trigger_render)
+
+def process_record_request(data):
+    """Process recording start/stop request"""
+    import bpy
+    from bpy.app import timers
+    
+    cam_id = data.get("cam_id", "")
+    action = data.get("action", "")
+    
+    if not cam_id:
+        print("WebSocket Test: Missing camera ID in record request")
+        return
+    
+    if not action:
+        print("WebSocket Test: Missing action in record request")
+        return
+    
+    def handle_record_action():
+        try:
+            if action.lower() == "start":
+                # Check if recording is already active
+                if bpy.context.scene.camera_tracking.recording_active:
+                    # Stop current recording first
+                    bpy.ops.ws.stop_camera_recording()
+                
+                # Start recording
+                bpy.ops.ws.start_camera_recording(cam_id=cam_id)
+                
+                # Make sure playback starts
+                if not bpy.context.screen.is_animation_playing:
+                    bpy.ops.screen.animation_play()
+            
+            elif action.lower() == "stop":
+                # Stop recording if active
+                if bpy.context.scene.camera_tracking.recording_active:
+                    bpy.ops.ws.stop_camera_recording()
+            
+            return None
+        except Exception as e:
+            print(f"WebSocket Test: Error handling record action: {str(e)}")
+            return None
+    
+    # Schedule the recording operation
+    timers.register(handle_record_action)
+
 def handshake(client_socket, data):
     """Complete the WebSocket handshake with the client"""
     # Convert to string for easier parsing
@@ -315,14 +382,27 @@ def handle_message(client_socket, message):
         data = json.loads(message)
         print(f"WebSocket Test: Received JSON: {data}")
         
-        # Check for IMU data
-        if data.get("type") == "IMU":
+        # Check message type and route to appropriate handler
+        message_type = data.get("type", "").upper()
+        
+        if message_type == "IMU":
             # Process IMU data
             def update_camera():
                 process_imu_data(data)
                 return None
             
             timers.register(update_camera)
+            
+        elif message_type == "RENDER":
+            # Process render request
+            process_render_request(data)
+            
+        elif message_type == "RECORD":
+            # Process record request
+            process_record_request(data)
+            
+        else:
+            print(f"WebSocket Test: Unknown message type: {message_type}")
     
     except json.JSONDecodeError:
         print(f"WebSocket Test: Invalid JSON: {message}")
